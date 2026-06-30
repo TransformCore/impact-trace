@@ -1,0 +1,33 @@
+{
+  "name": "impact-trace",
+  "version": "0.1.0",
+  "description": "ImpactTrace - carbon estimation for web application user journeys in CI",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "impact-trace": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js"
+  },
+  "keywords": [
+    "carbon",
+    "sustainability",
+    "ci",
+    "playwright",
+    "performance"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
