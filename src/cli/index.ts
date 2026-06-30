@@ -13,6 +13,7 @@ interface CliArgs {
   compareCache: boolean;
   clearCacheBeforeFirstRun: boolean;
   cpuMeasurementSeconds?: number;
+  disableCpuMeasurement: boolean;
 }
 
 async function main(): Promise<void> {
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
       compareCache: args.compareCache,
       clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
       cpuMeasurementSeconds: args.cpuMeasurementSeconds,
+      disableCpuMeasurement: args.disableCpuMeasurement,
     });
 
   printReport(report);
@@ -67,6 +69,7 @@ function parseArgs(argv: string[]): CliArgs {
   let compareCache = false;
   let clearCacheBeforeFirstRun = true;
   let cpuMeasurementSeconds: number | undefined;
+  let disableCpuMeasurement = false;
 
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--output' && argv[i + 1]) {
@@ -92,6 +95,11 @@ function parseArgs(argv: string[]): CliArgs {
       continue;
     }
 
+    if (argv[i] === '--no-cpu') {
+      disableCpuMeasurement = true;
+      continue;
+    }
+
     if (argv[i] === '--no-clear-cache') {
       clearCacheBeforeFirstRun = false;
     }
@@ -105,12 +113,13 @@ function parseArgs(argv: string[]): CliArgs {
     compareCache,
     clearCacheBeforeFirstRun,
     cpuMeasurementSeconds,
+    disableCpuMeasurement,
   };
 }
 
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>]');
+  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--no-cpu]');
+  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--no-cpu]');
 }
 
 function printReport(report: ImpactTraceReport): void {
@@ -253,6 +262,7 @@ async function runMultiUrlMode(args: CliArgs): Promise<ImpactTraceReport> {
       compareCache: args.compareCache,
       clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
       cpuMeasurementSeconds: args.cpuMeasurementSeconds,
+      disableCpuMeasurement: args.disableCpuMeasurement,
     });
 
     breakdown.push({

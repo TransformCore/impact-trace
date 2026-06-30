@@ -24,6 +24,7 @@ It executes browser journeys with Playwright, captures resource/network data, es
   - Third-party resource detection
 - Configurable CPU wattage model (env or repo config)
 - Configurable CPU measurement window to capture ongoing activity like animations (default 3s)
+- Optional CPU-off mode for network/asset-only reporting (`--no-cpu`)
 
 ## Install
 
@@ -101,6 +102,12 @@ ImpactTrace resolves CPU measurement window with this precedence:
 4. Built-in default (`3`)
 
 CPU is measured from journey start through at least the configured window, so short journeys still capture post-load activity such as animations.
+
+To disable CPU measurement entirely and use network transfer/asset size only:
+
+```bash
+npx impact-trace run --url https://example.com --no-cpu
+```
 
 Network transfer carbon is estimated via `@tgwf/co2` `perByteTrace()` segmented output and excludes consumer-device transfer emissions from the network component.
 

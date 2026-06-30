@@ -39,6 +39,9 @@ Notes:
   - Default: `3` seconds.
   - Alias: `--cpu-measurement-seconds <seconds>`.
   - Useful for capturing ongoing browser activity such as animations after initial navigation.
+- `--no-cpu`
+  - Disables CPU measurement entirely.
+  - Report totals become network/asset-transfer only for energy/carbon.
 
 ## Examples
 
@@ -76,6 +79,12 @@ Custom CPU sampling window:
 
 ```bash
 impact-trace run --url https://example.com --cpu-seconds 5
+```
+
+Disable CPU measurement:
+
+```bash
+impact-trace run --url https://example.com --no-cpu
 ```
 
 ## Journey Script Contract

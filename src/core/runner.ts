@@ -9,6 +9,7 @@ import {
   clearBrowserCacheFromContext,
   endCpuMeasurementForRunLabel,
   getPageFromContext,
+  setRunLabelInContext,
 } from '../plugins/browserPlugin.js';
 import type {
   CarbonMetric,
@@ -26,6 +27,7 @@ export interface RunOptions {
   compareCache?: boolean;
   clearCacheBeforeFirstRun?: boolean;
   cpuMeasurementSeconds?: number;
+  disableCpuMeasurement?: boolean;
 }
 
 export async function runJourneyWithPlugins(options: RunOptions): Promise<ImpactTraceReport> {
@@ -36,6 +38,7 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
       ? options.cpuMeasurementSeconds
       : runtimeConfig.cpuMeasurementSeconds;
   const cpuMeasurementDurationMs = Math.round(cpuMeasurementSeconds * 1000);
+  const shouldMeasureCpu = !options.disableCpuMeasurement;
   const journeyScriptPath = options.journeyScript
     ? path.resolve(workingDirectory, options.journeyScript)
     : path.resolve(workingDirectory, '.');
@@ -61,17 +64,29 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
         await clearBrowserCacheFromContext(context);
       }
 
-      await runWithCpuSamplingWindow(context, 'new-user', cpuMeasurementDurationMs, async () => {
-        await journey(page);
-      });
+      if (shouldMeasureCpu) {
+        await runWithCpuSamplingWindow(context, 'new-user', cpuMeasurementDurationMs, async () => {
+          await journey(page);
+        });
 
-      await runWithCpuSamplingWindow(context, 'returning-user', cpuMeasurementDurationMs, async () => {
+        await runWithCpuSamplingWindow(context, 'returning-user', cpuMeasurementDurationMs, async () => {
+          await journey(page);
+        });
+      } else {
+        setRunLabelInContext(context, 'new-user');
         await journey(page);
-      });
+        setRunLabelInContext(context, 'returning-user');
+        await journey(page);
+      }
     } else {
-      await runWithCpuSamplingWindow(context, 'single-run', cpuMeasurementDurationMs, async () => {
+      if (shouldMeasureCpu) {
+        await runWithCpuSamplingWindow(context, 'single-run', cpuMeasurementDurationMs, async () => {
+          await journey(page);
+        });
+      } else {
+        setRunLabelInContext(context, 'single-run');
         await journey(page);
-      });
+      }
     }
   } catch (error) {
     executionError = error;
