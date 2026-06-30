@@ -34,6 +34,11 @@ Notes:
   - Emits comparison section with deltas.
 - `--no-clear-cache`
   - Disables cache clear before first pass in comparison mode.
+- `--cpu-seconds <seconds>`
+  - Sets the minimum CPU measurement window per run.
+  - Default: `3` seconds.
+  - Alias: `--cpu-measurement-seconds <seconds>`.
+  - Useful for capturing ongoing browser activity such as animations after initial navigation.
 
 ## Examples
 
@@ -65,6 +70,12 @@ Custom output path:
 
 ```bash
 impact-trace run --url https://example.com --output reports/impacttrace.json
+```
+
+Custom CPU sampling window:
+
+```bash
+impact-trace run --url https://example.com --cpu-seconds 5
 ```
 
 ## Journey Script Contract

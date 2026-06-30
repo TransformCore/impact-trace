@@ -23,6 +23,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@tgwf/co2": "^0.18.0",
     "playwright": "^1.55.0"
   },
   "devDependencies": {

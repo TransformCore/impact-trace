@@ -2,11 +2,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PluginSystem } from './plugin-system.js';
 import { estimateCarbon } from '../models/carbonModel.js';
+import { resolveRuntimeConfig } from './config.js';
 import { buildSuggestions } from '../models/insights.js';
 import {
+  beginCpuMeasurementForRunLabel,
   clearBrowserCacheFromContext,
+  endCpuMeasurementForRunLabel,
   getPageFromContext,
-  setRunLabelInContext,
 } from '../plugins/browserPlugin.js';
 import type {
   CarbonMetric,
@@ -23,10 +25,17 @@ export interface RunOptions {
   workingDirectory?: string;
   compareCache?: boolean;
   clearCacheBeforeFirstRun?: boolean;
+  cpuMeasurementSeconds?: number;
 }
 
 export async function runJourneyWithPlugins(options: RunOptions): Promise<ImpactTraceReport> {
   const workingDirectory = options.workingDirectory ?? process.cwd();
+  const runtimeConfig = await resolveRuntimeConfig({ workingDirectory });
+  const cpuMeasurementSeconds =
+    options.cpuMeasurementSeconds && options.cpuMeasurementSeconds > 0
+      ? options.cpuMeasurementSeconds
+      : runtimeConfig.cpuMeasurementSeconds;
+  const cpuMeasurementDurationMs = Math.round(cpuMeasurementSeconds * 1000);
   const journeyScriptPath = options.journeyScript
     ? path.resolve(workingDirectory, options.journeyScript)
     : path.resolve(workingDirectory, '.');
@@ -52,21 +61,29 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
         await clearBrowserCacheFromContext(context);
       }
 
-      setRunLabelInContext(context, 'new-user');
-      await journey(page);
+      await runWithCpuSamplingWindow(context, 'new-user', cpuMeasurementDurationMs, async () => {
+        await journey(page);
+      });
 
-      setRunLabelInContext(context, 'returning-user');
-      await journey(page);
+      await runWithCpuSamplingWindow(context, 'returning-user', cpuMeasurementDurationMs, async () => {
+        await journey(page);
+      });
     } else {
-      setRunLabelInContext(context, 'single-run');
-      await journey(page);
+      await runWithCpuSamplingWindow(context, 'single-run', cpuMeasurementDurationMs, async () => {
+        await journey(page);
+      });
     }
   } catch (error) {
     executionError = error;
   }
 
   const metrics = await pluginSystem.stopAll();
-  const report = buildReportFromMetrics(metrics, context, options.compareCache ?? false);
+  const report = buildReportFromMetrics(
+    metrics,
+    context,
+    options.compareCache ?? false,
+    runtimeConfig.cpuWatts,
+  );
 
   if (executionError) {
     throw executionError;
@@ -75,13 +92,42 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
   return report;
 }
 
+async function runWithCpuSamplingWindow(
+  context: RunContext,
+  label: 'single-run' | 'new-user' | 'returning-user',
+  minimumDurationMs: number,
+  runJourney: () => Promise<void>,
+): Promise<void> {
+  await beginCpuMeasurementForRunLabel(context, label);
+  const startedAt = Date.now();
+
+  try {
+    await runJourney();
+
+    const elapsedMs = Date.now() - startedAt;
+    const remainingMs = minimumDurationMs - elapsedMs;
+    if (remainingMs > 0) {
+      await wait(remainingMs);
+    }
+  } finally {
+    await endCpuMeasurementForRunLabel(context, label);
+  }
+}
+
+async function wait(durationMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+}
+
 function buildReportFromMetrics(
   metrics: CarbonMetric[],
   context: RunContext,
   compareCache: boolean,
+  cpuWatts: number,
 ): ImpactTraceReport {
   if (!compareCache) {
-    const estimate = estimateCarbon(metrics);
+    const estimate = estimateCarbon(metrics, { cpuWatts });
 
     const firstPartyDomain = getFirstPartyDomain(context);
     const suggestions = buildSuggestions(estimate.resourceImpacts, firstPartyDomain);
@@ -89,6 +135,11 @@ function buildReportFromMetrics(
     return {
       totalCarbonGrams: estimate.totalCarbonGrams,
       totalEnergyKwh: estimate.totalEnergyKwh,
+      networkCarbonGrams: estimate.totalNetworkCarbonGrams,
+      networkEnergyKwh: estimate.totalNetworkEnergyKwh,
+      cpuTimeMs: estimate.totalCpuTimeMs,
+      cpuEnergyKwh: estimate.totalCpuEnergyKwh,
+      cpuCarbonGrams: estimate.totalCpuCarbonGrams,
       networkBytes: estimate.networkBytes,
       topResources: estimate.resourceImpacts.slice(0, 5),
       suggestions,
@@ -98,19 +149,31 @@ function buildReportFromMetrics(
   const firstMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'new-user');
   const returningMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'returning-user');
 
-  const firstEstimate = estimateCarbon(firstMetrics);
-  const returningEstimate = estimateCarbon(returningMetrics);
+  const firstEstimate = estimateCarbon(firstMetrics, { cpuWatts });
+  const returningEstimate = estimateCarbon(returningMetrics, { cpuWatts });
 
   const firstPartyDomain = getFirstPartyDomain(context);
   const suggestions = buildSuggestions(firstEstimate.resourceImpacts, firstPartyDomain);
 
   const carbonDelta = returningEstimate.totalCarbonGrams - firstEstimate.totalCarbonGrams;
   const energyDelta = returningEstimate.totalEnergyKwh - firstEstimate.totalEnergyKwh;
+  const networkCarbonDelta =
+    returningEstimate.totalNetworkCarbonGrams - firstEstimate.totalNetworkCarbonGrams;
+  const networkEnergyDelta =
+    returningEstimate.totalNetworkEnergyKwh - firstEstimate.totalNetworkEnergyKwh;
+  const cpuTimeDelta = returningEstimate.totalCpuTimeMs - firstEstimate.totalCpuTimeMs;
+  const cpuEnergyDelta = returningEstimate.totalCpuEnergyKwh - firstEstimate.totalCpuEnergyKwh;
+  const cpuCarbonDelta = returningEstimate.totalCpuCarbonGrams - firstEstimate.totalCpuCarbonGrams;
   const bytesDelta = returningEstimate.networkBytes - firstEstimate.networkBytes;
 
   return {
     totalCarbonGrams: firstEstimate.totalCarbonGrams,
     totalEnergyKwh: firstEstimate.totalEnergyKwh,
+    networkCarbonGrams: firstEstimate.totalNetworkCarbonGrams,
+    networkEnergyKwh: firstEstimate.totalNetworkEnergyKwh,
+    cpuTimeMs: firstEstimate.totalCpuTimeMs,
+    cpuEnergyKwh: firstEstimate.totalCpuEnergyKwh,
+    cpuCarbonGrams: firstEstimate.totalCpuCarbonGrams,
     networkBytes: firstEstimate.networkBytes,
     topResources: firstEstimate.resourceImpacts.slice(0, 5),
     suggestions,
@@ -118,21 +181,53 @@ function buildReportFromMetrics(
       firstVisit: {
         totalCarbonGrams: firstEstimate.totalCarbonGrams,
         totalEnergyKwh: firstEstimate.totalEnergyKwh,
+        networkCarbonGrams: firstEstimate.totalNetworkCarbonGrams,
+        networkEnergyKwh: firstEstimate.totalNetworkEnergyKwh,
+        cpuTimeMs: firstEstimate.totalCpuTimeMs,
+        cpuEnergyKwh: firstEstimate.totalCpuEnergyKwh,
+        cpuCarbonGrams: firstEstimate.totalCpuCarbonGrams,
         networkBytes: firstEstimate.networkBytes,
         topResources: firstEstimate.resourceImpacts.slice(0, 5),
       },
       returningVisit: {
         totalCarbonGrams: returningEstimate.totalCarbonGrams,
         totalEnergyKwh: returningEstimate.totalEnergyKwh,
+        networkCarbonGrams: returningEstimate.totalNetworkCarbonGrams,
+        networkEnergyKwh: returningEstimate.totalNetworkEnergyKwh,
+        cpuTimeMs: returningEstimate.totalCpuTimeMs,
+        cpuEnergyKwh: returningEstimate.totalCpuEnergyKwh,
+        cpuCarbonGrams: returningEstimate.totalCpuCarbonGrams,
         networkBytes: returningEstimate.networkBytes,
         topResources: returningEstimate.resourceImpacts.slice(0, 5),
       },
       delta: {
         carbonGrams: carbonDelta,
         energyKwh: energyDelta,
+        networkCarbonGrams: networkCarbonDelta,
+        networkEnergyKwh: networkEnergyDelta,
+        cpuTimeMs: cpuTimeDelta,
+        cpuEnergyKwh: cpuEnergyDelta,
+        cpuCarbonGrams: cpuCarbonDelta,
         networkBytes: bytesDelta,
         carbonPercent: calculatePercentChange(firstEstimate.totalCarbonGrams, returningEstimate.totalCarbonGrams),
         energyPercent: calculatePercentChange(firstEstimate.totalEnergyKwh, returningEstimate.totalEnergyKwh),
+        networkCarbonPercent: calculatePercentChange(
+          firstEstimate.totalNetworkCarbonGrams,
+          returningEstimate.totalNetworkCarbonGrams,
+        ),
+        networkEnergyPercent: calculatePercentChange(
+          firstEstimate.totalNetworkEnergyKwh,
+          returningEstimate.totalNetworkEnergyKwh,
+        ),
+        cpuTimePercent: calculatePercentChange(firstEstimate.totalCpuTimeMs, returningEstimate.totalCpuTimeMs),
+        cpuEnergyPercent: calculatePercentChange(
+          firstEstimate.totalCpuEnergyKwh,
+          returningEstimate.totalCpuEnergyKwh,
+        ),
+        cpuCarbonPercent: calculatePercentChange(
+          firstEstimate.totalCpuCarbonGrams,
+          returningEstimate.totalCpuCarbonGrams,
+        ),
         networkPercent: calculatePercentChange(firstEstimate.networkBytes, returningEstimate.networkBytes),
       },
     },

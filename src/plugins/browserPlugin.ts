@@ -1,8 +1,13 @@
-import { chromium, type Browser, type BrowserContext, type Page, type Response } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Page, type Response } from 'playwright';
 import type { CarbonMetric, MeasurementPlugin, RunContext } from '../types/index.js';
 
 const PAGE_KEY = 'playwrightPage';
 const RUN_LABEL_KEY = 'impactTraceRunLabel';
+const CDP_SESSION_KEY = 'impactTraceCdpSession';
+const CPU_METRIC_STARTS_KEY = 'impactTraceCpuMetricStarts';
+const CPU_METRIC_TOTALS_KEY = 'impactTraceCpuMetricTotals';
+
+type RunLabel = 'single-run' | 'new-user' | 'returning-user';
 
 export class BrowserPlugin implements MeasurementPlugin {
   name = 'browser';
@@ -13,6 +18,7 @@ export class BrowserPlugin implements MeasurementPlugin {
   private readonly metrics: CarbonMetric[] = [];
   private responseListener?: (response: Response) => void;
   private context?: RunContext;
+  private cdpSession?: CDPSession;
 
   async start(context: RunContext): Promise<void> {
     this.context = context;
@@ -25,6 +31,13 @@ export class BrowserPlugin implements MeasurementPlugin {
     };
 
     this.page.on('response', this.responseListener);
+
+    this.cdpSession = await this.browserContext.newCDPSession(this.page);
+    await this.cdpSession.send('Performance.enable');
+
+    context.data.set(CDP_SESSION_KEY, this.cdpSession);
+    context.data.set(CPU_METRIC_STARTS_KEY, new Map<RunLabel, number>());
+    context.data.set(CPU_METRIC_TOTALS_KEY, new Map<RunLabel, number>());
     context.data.set(PAGE_KEY, this.page);
   }
 
@@ -34,30 +47,22 @@ export class BrowserPlugin implements MeasurementPlugin {
         this.page.off('response', this.responseListener);
       }
 
-      const perfMetrics = await this.page.evaluate(() => {
-        return performance.getEntriesByType('resource').map((entry) => {
-          const resource = entry as PerformanceResourceTiming;
-          return {
-            url: resource.name,
-            resourceType: resource.initiatorType,
-            transferSize: resource.transferSize || resource.encodedBodySize || 0,
-            duration: resource.duration,
-            startTime: resource.startTime,
-          };
-        });
-      });
-
+      const totals = getCpuTotalsMap(this.context);
+      const currentPageUrl = this.page.url();
       const now = Date.now();
-      for (const metric of perfMetrics) {
-        const runLabel = getRunLabel(this.context);
+
+      for (const [runLabel, cpuTimeMs] of totals.entries()) {
+        if (cpuTimeMs <= 0) {
+          continue;
+        }
+
         this.metrics.push({
           source: 'browser',
           timestampStart: now,
           timestampEnd: now,
-          cpuTimeMs: metric.duration,
+          cpuTimeMs,
           metadata: {
-            url: metric.url,
-            resourceType: metric.resourceType,
+            url: currentPageUrl,
             runLabel,
           },
         });
@@ -106,12 +111,42 @@ export class BrowserPlugin implements MeasurementPlugin {
   }
 }
 
-function getRunLabel(context?: RunContext): 'single-run' | 'new-user' | 'returning-user' {
+function getRunLabel(context?: RunContext): RunLabel {
   const value = context?.data.get(RUN_LABEL_KEY);
   if (value === 'new-user' || value === 'returning-user' || value === 'single-run') {
     return value;
   }
   return 'single-run';
+}
+
+function getCpuStartsMap(context?: RunContext): Map<RunLabel, number> {
+  const value = context?.data.get(CPU_METRIC_STARTS_KEY);
+  if (value instanceof Map) {
+    return value as Map<RunLabel, number>;
+  }
+  return new Map<RunLabel, number>();
+}
+
+function getCpuTotalsMap(context?: RunContext): Map<RunLabel, number> {
+  const value = context?.data.get(CPU_METRIC_TOTALS_KEY);
+  if (value instanceof Map) {
+    return value as Map<RunLabel, number>;
+  }
+  return new Map<RunLabel, number>();
+}
+
+function getCdpSession(context?: RunContext): CDPSession | undefined {
+  const value = context?.data.get(CDP_SESSION_KEY);
+  if (!value) {
+    return undefined;
+  }
+  return value as CDPSession;
+}
+
+async function getThreadTimeSeconds(session: CDPSession): Promise<number> {
+  const metrics = await session.send('Performance.getMetrics');
+  const threadTime = metrics.metrics.find((metric) => metric.name === 'ThreadTime');
+  return threadTime?.value ?? 0;
 }
 
 export function getPageFromContext(context: RunContext): Page {
@@ -124,9 +159,45 @@ export function getPageFromContext(context: RunContext): Page {
 
 export function setRunLabelInContext(
   context: RunContext,
-  label: 'single-run' | 'new-user' | 'returning-user',
+  label: RunLabel,
 ): void {
   context.data.set(RUN_LABEL_KEY, label);
+}
+
+export async function beginCpuMeasurementForRunLabel(context: RunContext, label: RunLabel): Promise<void> {
+  setRunLabelInContext(context, label);
+
+  const session = getCdpSession(context);
+  if (!session) {
+    return;
+  }
+
+  const starts = getCpuStartsMap(context);
+  starts.set(label, await getThreadTimeSeconds(session));
+  context.data.set(CPU_METRIC_STARTS_KEY, starts);
+}
+
+export async function endCpuMeasurementForRunLabel(context: RunContext, label: RunLabel): Promise<void> {
+  const session = getCdpSession(context);
+  if (!session) {
+    return;
+  }
+
+  const starts = getCpuStartsMap(context);
+  const startValue = starts.get(label);
+  if (startValue === undefined) {
+    return;
+  }
+
+  const endValue = await getThreadTimeSeconds(session);
+  const deltaMs = Math.max(0, (endValue - startValue) * 1000);
+
+  const totals = getCpuTotalsMap(context);
+  totals.set(label, (totals.get(label) ?? 0) + deltaMs);
+
+  context.data.set(CPU_METRIC_TOTALS_KEY, totals);
+  starts.delete(label);
+  context.data.set(CPU_METRIC_STARTS_KEY, starts);
 }
 
 export async function clearBrowserCacheFromContext(context: RunContext): Promise<void> {

@@ -41,6 +41,11 @@ export interface ResourceImpact {
 export interface CarbonEstimate {
   totalEnergyKwh: number;
   totalCarbonGrams: number;
+  totalNetworkEnergyKwh: number;
+  totalNetworkCarbonGrams: number;
+  totalCpuTimeMs: number;
+  totalCpuEnergyKwh: number;
+  totalCpuCarbonGrams: number;
   networkBytes: number;
   resourceImpacts: ResourceImpact[];
 }
@@ -54,6 +59,11 @@ export interface DeveloperSuggestion {
 export interface ImpactTraceReport {
   totalCarbonGrams: number;
   totalEnergyKwh: number;
+  networkCarbonGrams: number;
+  networkEnergyKwh: number;
+  cpuTimeMs: number;
+  cpuEnergyKwh: number;
+  cpuCarbonGrams: number;
   networkBytes: number;
   topResources: ResourceImpact[];
   suggestions: DeveloperSuggestion[];
@@ -62,21 +72,41 @@ export interface ImpactTraceReport {
     firstVisit: {
       totalCarbonGrams: number;
       totalEnergyKwh: number;
+      networkCarbonGrams: number;
+      networkEnergyKwh: number;
+      cpuTimeMs: number;
+      cpuEnergyKwh: number;
+      cpuCarbonGrams: number;
       networkBytes: number;
       topResources: ResourceImpact[];
     };
     returningVisit: {
       totalCarbonGrams: number;
       totalEnergyKwh: number;
+      networkCarbonGrams: number;
+      networkEnergyKwh: number;
+      cpuTimeMs: number;
+      cpuEnergyKwh: number;
+      cpuCarbonGrams: number;
       networkBytes: number;
       topResources: ResourceImpact[];
     };
     delta: {
       carbonGrams: number;
       energyKwh: number;
+      networkCarbonGrams: number;
+      networkEnergyKwh: number;
+      cpuTimeMs: number;
+      cpuEnergyKwh: number;
+      cpuCarbonGrams: number;
       networkBytes: number;
       carbonPercent: number | null;
       energyPercent: number | null;
+      networkCarbonPercent: number | null;
+      networkEnergyPercent: number | null;
+      cpuTimePercent: number | null;
+      cpuEnergyPercent: number | null;
+      cpuCarbonPercent: number | null;
       networkPercent: number | null;
     };
   };
@@ -86,6 +116,11 @@ export interface UrlBreakdown {
   url: string;
   totalCarbonGrams: number;
   totalEnergyKwh: number;
+  networkCarbonGrams: number;
+  networkEnergyKwh: number;
+  cpuTimeMs: number;
+  cpuEnergyKwh: number;
+  cpuCarbonGrams: number;
   networkBytes: number;
   topResources: ResourceImpact[];
   suggestions: DeveloperSuggestion[];

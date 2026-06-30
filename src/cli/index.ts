@@ -3,7 +3,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { BrowserPlugin } from '../plugins/browserPlugin.js';
 import { runJourneyWithPlugins } from '../core/runner.js';
-import { bytesToKwh, kwhToCarbonGrams } from '../models/carbonModel.js';
 import type { ImpactTraceReport, ResourceImpact, UrlBreakdown } from '../types/index.js';
 
 interface CliArgs {
@@ -13,12 +12,23 @@ interface CliArgs {
   outputPath: string;
   compareCache: boolean;
   clearCacheBeforeFirstRun: boolean;
+  cpuMeasurementSeconds?: number;
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.command !== 'run' || (!args.journeyScript && args.urls.length === 0)) {
+    printUsage();
+    process.exitCode = 1;
+    return;
+  }
+
+  if (
+    args.cpuMeasurementSeconds !== undefined &&
+    (!Number.isFinite(args.cpuMeasurementSeconds) || args.cpuMeasurementSeconds <= 0)
+  ) {
+    console.error('CPU measurement window must be a positive number of seconds.');
     printUsage();
     process.exitCode = 1;
     return;
@@ -36,6 +46,7 @@ async function main(): Promise<void> {
       plugins: [new BrowserPlugin()],
       compareCache: args.compareCache,
       clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
+      cpuMeasurementSeconds: args.cpuMeasurementSeconds,
     });
 
   printReport(report);
@@ -55,6 +66,7 @@ function parseArgs(argv: string[]): CliArgs {
   const urls: string[] = [];
   let compareCache = false;
   let clearCacheBeforeFirstRun = true;
+  let cpuMeasurementSeconds: number | undefined;
 
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--output' && argv[i + 1]) {
@@ -74,6 +86,12 @@ function parseArgs(argv: string[]): CliArgs {
       continue;
     }
 
+    if ((argv[i] === '--cpu-seconds' || argv[i] === '--cpu-measurement-seconds') && argv[i + 1]) {
+      cpuMeasurementSeconds = Number.parseFloat(argv[i + 1]);
+      i += 1;
+      continue;
+    }
+
     if (argv[i] === '--no-clear-cache') {
       clearCacheBeforeFirstRun = false;
     }
@@ -86,12 +104,13 @@ function parseArgs(argv: string[]): CliArgs {
     outputPath,
     compareCache,
     clearCacheBeforeFirstRun,
+    cpuMeasurementSeconds,
   };
 }
 
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache]');
+  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>]');
+  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>]');
 }
 
 function printReport(report: ImpactTraceReport): void {
@@ -110,6 +129,11 @@ function printReport(report: ImpactTraceReport): void {
   console.log('ImpactTrace Report\n');
   console.log(`Total Carbon: ${report.totalCarbonGrams.toFixed(3)}g CO2`);
   console.log(`Total Energy: ${report.totalEnergyKwh.toFixed(6)} kWh`);
+  console.log(`Network Carbon (no device): ${report.networkCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`Network Energy (no device): ${report.networkEnergyKwh.toFixed(6)} kWh`);
+  console.log(`CPU Time: ${formatDurationMs(report.cpuTimeMs)}`);
+  console.log(`CPU Carbon: ${report.cpuCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`CPU Energy: ${report.cpuEnergyKwh.toFixed(6)} kWh`);
   console.log(`Network Transfer: ${networkMb.toFixed(3)} MB\n`);
 
   console.log('Top Contributors:');
@@ -145,16 +169,31 @@ function printComparisonReport(report: ImpactTraceReport): void {
   console.log('New User (Cold-ish):');
   console.log(`Total Carbon: ${comparison.firstVisit.totalCarbonGrams.toFixed(3)}g CO2`);
   console.log(`Total Energy: ${comparison.firstVisit.totalEnergyKwh.toFixed(6)} kWh`);
+  console.log(`Network Carbon (no device): ${comparison.firstVisit.networkCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`Network Energy (no device): ${comparison.firstVisit.networkEnergyKwh.toFixed(6)} kWh`);
+  console.log(`CPU Time: ${formatDurationMs(comparison.firstVisit.cpuTimeMs)}`);
+  console.log(`CPU Carbon: ${comparison.firstVisit.cpuCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`CPU Energy: ${comparison.firstVisit.cpuEnergyKwh.toFixed(6)} kWh`);
   console.log(`Network Transfer: ${(comparison.firstVisit.networkBytes / (1024 * 1024)).toFixed(3)} MB\n`);
 
   console.log('Returning User (Warm):');
   console.log(`Total Carbon: ${comparison.returningVisit.totalCarbonGrams.toFixed(3)}g CO2`);
   console.log(`Total Energy: ${comparison.returningVisit.totalEnergyKwh.toFixed(6)} kWh`);
+  console.log(`Network Carbon (no device): ${comparison.returningVisit.networkCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`Network Energy (no device): ${comparison.returningVisit.networkEnergyKwh.toFixed(6)} kWh`);
+  console.log(`CPU Time: ${formatDurationMs(comparison.returningVisit.cpuTimeMs)}`);
+  console.log(`CPU Carbon: ${comparison.returningVisit.cpuCarbonGrams.toFixed(3)}g CO2`);
+  console.log(`CPU Energy: ${comparison.returningVisit.cpuEnergyKwh.toFixed(6)} kWh`);
   console.log(`Network Transfer: ${(comparison.returningVisit.networkBytes / (1024 * 1024)).toFixed(3)} MB\n`);
 
   console.log('Difference (Returning - New):');
   console.log(`Carbon Delta: ${comparison.delta.carbonGrams.toFixed(3)}g (${formatPercent(comparison.delta.carbonPercent)})`);
   console.log(`Energy Delta: ${comparison.delta.energyKwh.toFixed(6)} kWh (${formatPercent(comparison.delta.energyPercent)})`);
+  console.log(`Network Carbon Delta: ${comparison.delta.networkCarbonGrams.toFixed(3)}g (${formatPercent(comparison.delta.networkCarbonPercent)})`);
+  console.log(`Network Energy Delta: ${comparison.delta.networkEnergyKwh.toFixed(6)} kWh (${formatPercent(comparison.delta.networkEnergyPercent)})`);
+  console.log(`CPU Time Delta: ${formatDurationMs(comparison.delta.cpuTimeMs)} (${formatPercent(comparison.delta.cpuTimePercent)})`);
+  console.log(`CPU Carbon Delta: ${comparison.delta.cpuCarbonGrams.toFixed(3)}g (${formatPercent(comparison.delta.cpuCarbonPercent)})`);
+  console.log(`CPU Energy Delta: ${comparison.delta.cpuEnergyKwh.toFixed(6)} kWh (${formatPercent(comparison.delta.cpuEnergyPercent)})`);
   console.log(
     `Network Delta: ${(comparison.delta.networkBytes / (1024 * 1024)).toFixed(3)} MB (${formatPercent(comparison.delta.networkPercent)})`,
   );
@@ -200,6 +239,10 @@ function formatAssetSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+function formatDurationMs(durationMs: number): string {
+  return `${(durationMs / 1000).toFixed(3)} s`;
+}
+
 async function runMultiUrlMode(args: CliArgs): Promise<ImpactTraceReport> {
   const breakdown: UrlBreakdown[] = [];
 
@@ -209,12 +252,18 @@ async function runMultiUrlMode(args: CliArgs): Promise<ImpactTraceReport> {
       plugins: [new BrowserPlugin()],
       compareCache: args.compareCache,
       clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
+      cpuMeasurementSeconds: args.cpuMeasurementSeconds,
     });
 
     breakdown.push({
       url,
       totalCarbonGrams: report.totalCarbonGrams,
       totalEnergyKwh: report.totalEnergyKwh,
+      networkCarbonGrams: report.networkCarbonGrams,
+      networkEnergyKwh: report.networkEnergyKwh,
+      cpuTimeMs: report.cpuTimeMs,
+      cpuEnergyKwh: report.cpuEnergyKwh,
+      cpuCarbonGrams: report.cpuCarbonGrams,
       networkBytes: report.networkBytes,
       topResources: report.topResources,
       suggestions: report.suggestions,
@@ -230,6 +279,11 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
     return {
       totalCarbonGrams: 0,
       totalEnergyKwh: 0,
+      networkCarbonGrams: 0,
+      networkEnergyKwh: 0,
+      cpuTimeMs: 0,
+      cpuEnergyKwh: 0,
+      cpuCarbonGrams: 0,
       networkBytes: 0,
       topResources: [],
       suggestions: [],
@@ -238,8 +292,13 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
   }
 
   const aggregateNetworkBytes = breakdown.reduce((sum, item) => sum + item.networkBytes, 0);
+  const aggregateNetworkCarbonGrams = breakdown.reduce((sum, item) => sum + item.networkCarbonGrams, 0);
+  const aggregateNetworkEnergyKwh = breakdown.reduce((sum, item) => sum + item.networkEnergyKwh, 0);
   const aggregateEnergyKwh = breakdown.reduce((sum, item) => sum + item.totalEnergyKwh, 0);
   const aggregateCarbon = breakdown.reduce((sum, item) => sum + item.totalCarbonGrams, 0);
+  const aggregateCpuTimeMs = breakdown.reduce((sum, item) => sum + item.cpuTimeMs, 0);
+  const aggregateCpuEnergyKwh = breakdown.reduce((sum, item) => sum + item.cpuEnergyKwh, 0);
+  const aggregateCpuCarbonGrams = breakdown.reduce((sum, item) => sum + item.cpuCarbonGrams, 0);
   const aggregateTopResources = mergeTopResources(breakdown.flatMap((item) => item.topResources), 5);
   const aggregateSuggestions = dedupeSuggestions(breakdown.flatMap((item) => item.suggestions));
 
@@ -247,6 +306,11 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
     return {
       totalCarbonGrams: aggregateCarbon,
       totalEnergyKwh: aggregateEnergyKwh,
+      networkCarbonGrams: aggregateNetworkCarbonGrams,
+      networkEnergyKwh: aggregateNetworkEnergyKwh,
+      cpuTimeMs: aggregateCpuTimeMs,
+      cpuEnergyKwh: aggregateCpuEnergyKwh,
+      cpuCarbonGrams: aggregateCpuCarbonGrams,
       networkBytes: aggregateNetworkBytes,
       topResources: aggregateTopResources,
       suggestions: aggregateSuggestions,
@@ -255,12 +319,49 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
   }
 
   const firstVisitBytes = breakdown.reduce((sum, item) => sum + (item.comparison?.firstVisit.networkBytes ?? 0), 0);
+  const firstVisitNetworkCarbon = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.firstVisit.networkCarbonGrams ?? 0),
+    0,
+  );
+  const firstVisitNetworkEnergy = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.firstVisit.networkEnergyKwh ?? 0),
+    0,
+  );
   const firstVisitEnergy = breakdown.reduce((sum, item) => sum + (item.comparison?.firstVisit.totalEnergyKwh ?? 0), 0);
   const firstVisitCarbon = breakdown.reduce((sum, item) => sum + (item.comparison?.firstVisit.totalCarbonGrams ?? 0), 0);
+  const firstVisitCpuTimeMs = breakdown.reduce((sum, item) => sum + (item.comparison?.firstVisit.cpuTimeMs ?? 0), 0);
+  const firstVisitCpuEnergy = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.firstVisit.cpuEnergyKwh ?? 0),
+    0,
+  );
+  const firstVisitCpuCarbon = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.firstVisit.cpuCarbonGrams ?? 0),
+    0,
+  );
 
   const returningBytes = breakdown.reduce((sum, item) => sum + (item.comparison?.returningVisit.networkBytes ?? 0), 0);
+  const returningNetworkCarbon = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.returningVisit.networkCarbonGrams ?? 0),
+    0,
+  );
+  const returningNetworkEnergy = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.returningVisit.networkEnergyKwh ?? 0),
+    0,
+  );
   const returningEnergy = breakdown.reduce((sum, item) => sum + (item.comparison?.returningVisit.totalEnergyKwh ?? 0), 0);
   const returningCarbon = breakdown.reduce((sum, item) => sum + (item.comparison?.returningVisit.totalCarbonGrams ?? 0), 0);
+  const returningCpuTimeMs = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.returningVisit.cpuTimeMs ?? 0),
+    0,
+  );
+  const returningCpuEnergy = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.returningVisit.cpuEnergyKwh ?? 0),
+    0,
+  );
+  const returningCpuCarbon = breakdown.reduce(
+    (sum, item) => sum + (item.comparison?.returningVisit.cpuCarbonGrams ?? 0),
+    0,
+  );
 
   const firstResources = mergeTopResources(
     breakdown.flatMap((item) => item.comparison?.firstVisit.topResources ?? []),
@@ -274,6 +375,11 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
   return {
     totalCarbonGrams: firstVisitCarbon,
     totalEnergyKwh: firstVisitEnergy,
+    networkCarbonGrams: firstVisitNetworkCarbon,
+    networkEnergyKwh: firstVisitNetworkEnergy,
+    cpuTimeMs: firstVisitCpuTimeMs,
+    cpuEnergyKwh: firstVisitCpuEnergy,
+    cpuCarbonGrams: firstVisitCpuCarbon,
     networkBytes: firstVisitBytes,
     topResources: firstResources,
     suggestions: aggregateSuggestions,
@@ -282,21 +388,41 @@ function aggregateBreakdown(breakdown: UrlBreakdown[], isComparisonMode: boolean
       firstVisit: {
         totalCarbonGrams: firstVisitCarbon,
         totalEnergyKwh: firstVisitEnergy,
+        networkCarbonGrams: firstVisitNetworkCarbon,
+        networkEnergyKwh: firstVisitNetworkEnergy,
+        cpuTimeMs: firstVisitCpuTimeMs,
+        cpuEnergyKwh: firstVisitCpuEnergy,
+        cpuCarbonGrams: firstVisitCpuCarbon,
         networkBytes: firstVisitBytes,
         topResources: firstResources,
       },
       returningVisit: {
         totalCarbonGrams: returningCarbon,
         totalEnergyKwh: returningEnergy,
+        networkCarbonGrams: returningNetworkCarbon,
+        networkEnergyKwh: returningNetworkEnergy,
+        cpuTimeMs: returningCpuTimeMs,
+        cpuEnergyKwh: returningCpuEnergy,
+        cpuCarbonGrams: returningCpuCarbon,
         networkBytes: returningBytes,
         topResources: returningResources,
       },
       delta: {
         carbonGrams: returningCarbon - firstVisitCarbon,
         energyKwh: returningEnergy - firstVisitEnergy,
+        networkCarbonGrams: returningNetworkCarbon - firstVisitNetworkCarbon,
+        networkEnergyKwh: returningNetworkEnergy - firstVisitNetworkEnergy,
+        cpuTimeMs: returningCpuTimeMs - firstVisitCpuTimeMs,
+        cpuEnergyKwh: returningCpuEnergy - firstVisitCpuEnergy,
+        cpuCarbonGrams: returningCpuCarbon - firstVisitCpuCarbon,
         networkBytes: returningBytes - firstVisitBytes,
         carbonPercent: toPercent(firstVisitCarbon, returningCarbon),
         energyPercent: toPercent(firstVisitEnergy, returningEnergy),
+        networkCarbonPercent: toPercent(firstVisitNetworkCarbon, returningNetworkCarbon),
+        networkEnergyPercent: toPercent(firstVisitNetworkEnergy, returningNetworkEnergy),
+        cpuTimePercent: toPercent(firstVisitCpuTimeMs, returningCpuTimeMs),
+        cpuEnergyPercent: toPercent(firstVisitCpuEnergy, returningCpuEnergy),
+        cpuCarbonPercent: toPercent(firstVisitCpuCarbon, returningCpuCarbon),
         networkPercent: toPercent(firstVisitBytes, returningBytes),
       },
     },
@@ -316,8 +442,8 @@ function mergeTopResources(resources: ResourceImpact[], limit: number): Resource
     }
 
     current.networkBytes += resource.networkBytes;
-    current.energyKwh = bytesToKwh(current.networkBytes);
-    current.carbonGrams = kwhToCarbonGrams(current.energyKwh);
+    current.energyKwh += resource.energyKwh;
+    current.carbonGrams += resource.carbonGrams;
     current.cached = current.cached ?? resource.cached;
   }
 
@@ -356,10 +482,22 @@ function printUrlBreakdown(breakdown: UrlBreakdown[], hasComparison: boolean): v
       const firstMb = entry.comparison.firstVisit.networkBytes / (1024 * 1024);
       const returningMb = entry.comparison.returningVisit.networkBytes / (1024 * 1024);
       console.log(`   New: ${entry.comparison.firstVisit.totalCarbonGrams.toFixed(3)}g, ${firstMb.toFixed(3)} MB`);
+      console.log(
+        `   New Network (no device): ${entry.comparison.firstVisit.networkCarbonGrams.toFixed(3)}g, ${entry.comparison.firstVisit.networkEnergyKwh.toFixed(6)} kWh`,
+      );
+      console.log(`   New CPU: ${formatDurationMs(entry.comparison.firstVisit.cpuTimeMs)}, ${entry.comparison.firstVisit.cpuCarbonGrams.toFixed(3)}g`);
       console.log(`   Returning: ${entry.comparison.returningVisit.totalCarbonGrams.toFixed(3)}g, ${returningMb.toFixed(3)} MB`);
+      console.log(
+        `   Returning Network (no device): ${entry.comparison.returningVisit.networkCarbonGrams.toFixed(3)}g, ${entry.comparison.returningVisit.networkEnergyKwh.toFixed(6)} kWh`,
+      );
+      console.log(
+        `   Returning CPU: ${formatDurationMs(entry.comparison.returningVisit.cpuTimeMs)}, ${entry.comparison.returningVisit.cpuCarbonGrams.toFixed(3)}g`,
+      );
     } else {
       console.log(`   Carbon: ${entry.totalCarbonGrams.toFixed(3)}g`);
       console.log(`   Energy: ${entry.totalEnergyKwh.toFixed(6)} kWh`);
+      console.log(`   Network (no device): ${entry.networkCarbonGrams.toFixed(3)}g, ${entry.networkEnergyKwh.toFixed(6)} kWh`);
+      console.log(`   CPU: ${formatDurationMs(entry.cpuTimeMs)}, ${entry.cpuCarbonGrams.toFixed(3)}g`);
       console.log(`   Network: ${mb.toFixed(3)} MB`);
     }
   });
