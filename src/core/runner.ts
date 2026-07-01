@@ -13,10 +13,19 @@ import {
 } from '../plugins/browserPlugin.js';
 import type {
   CarbonMetric,
+  ComparisonDeltaReport,
+  ComparisonReport,
+  CpuDetails,
+  EvidenceSourceId,
+  GridIntensityConfig,
   ImpactTraceReport,
   JourneyFunction,
   MeasurementPlugin,
+  ReportSources,
   RunContext,
+  SwdmPercentBreakdown,
+  SwdmReportBreakdown,
+  VisitReport,
 } from '../types/index.js';
 
 export interface RunOptions {
@@ -28,6 +37,10 @@ export interface RunOptions {
   clearCacheBeforeFirstRun?: boolean;
   cpuMeasurementSeconds?: number;
   disableCpuMeasurement?: boolean;
+  gridIntensity?: GridIntensityConfig;
+  greenHostingFactor?: number;
+  returnVisitorRatio?: number;
+  dataCacheRatio?: number;
 }
 
 export async function runJourneyWithPlugins(options: RunOptions): Promise<ImpactTraceReport> {
@@ -39,6 +52,23 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
       : runtimeConfig.cpuMeasurementSeconds;
   const cpuMeasurementDurationMs = Math.round(cpuMeasurementSeconds * 1000);
   const shouldMeasureCpu = !options.disableCpuMeasurement;
+  const gridIntensity = mergeGridIntensityBySegment(runtimeConfig.gridIntensity, options.gridIntensity);
+  const greenHostingFactor =
+    options.greenHostingFactor !== undefined ? clampRatio(options.greenHostingFactor) : runtimeConfig.greenHostingFactor;
+  const greenHostingFactorSource: 'default' | 'explicit' =
+    options.greenHostingFactor !== undefined ? 'explicit' : runtimeConfig.greenHostingFactorSource;
+  const returnVisitorRatio =
+    options.returnVisitorRatio !== undefined
+      ? clampRatio(options.returnVisitorRatio)
+      : runtimeConfig.returnVisitorRatio;
+  const returnVisitorRatioSource: 'default' | 'explicit' =
+    options.returnVisitorRatio !== undefined ? 'explicit' : runtimeConfig.returnVisitorRatioSource;
+  const explicitDataCacheRatio =
+    options.dataCacheRatio !== undefined
+      ? clampRatio(options.dataCacheRatio)
+      : runtimeConfig.dataCacheRatio;
+  const explicitDataCacheRatioSource: 'explicit' | undefined =
+    options.dataCacheRatio !== undefined ? 'explicit' : runtimeConfig.dataCacheRatioSource;
   const journeyScriptPath = options.journeyScript
     ? path.resolve(workingDirectory, options.journeyScript)
     : path.resolve(workingDirectory, '.');
@@ -98,6 +128,13 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
     context,
     options.compareCache ?? false,
     runtimeConfig.cpuWatts,
+    gridIntensity,
+    greenHostingFactor,
+    greenHostingFactorSource,
+    returnVisitorRatio,
+    returnVisitorRatioSource,
+    explicitDataCacheRatio,
+    explicitDataCacheRatioSource,
   );
 
   if (executionError) {
@@ -140,113 +177,502 @@ function buildReportFromMetrics(
   context: RunContext,
   compareCache: boolean,
   cpuWatts: number,
+  gridIntensity?: GridIntensityConfig,
+  greenHostingFactor = 0,
+  greenHostingFactorSource: 'default' | 'explicit' = 'default',
+  returnVisitorRatio = 0.75,
+  returnVisitorRatioSource: 'default' | 'explicit' = 'default',
+  explicitDataCacheRatio?: number,
+  explicitDataCacheRatioSource?: 'explicit',
 ): ImpactTraceReport {
+  const clampedReturnVisitorRatio = clampRatio(returnVisitorRatio);
+  const newVisitorRatio = 1 - clampedReturnVisitorRatio;
+
   if (!compareCache) {
-    const estimate = estimateCarbon(metrics, { cpuWatts });
+    const estimate = estimateCarbon(metrics, { cpuWatts, gridIntensity, greenHostingFactor });
 
     const firstPartyDomain = getFirstPartyDomain(context);
     const suggestions = buildSuggestions(estimate.resourceImpacts, firstPartyDomain);
+    const sources = buildReportSources(estimate, cpuWatts, greenHostingFactor);
 
     return {
-      totalCarbonGrams: estimate.totalCarbonGrams,
-      totalEnergyKwh: estimate.totalEnergyKwh,
-      networkCarbonGrams: estimate.totalNetworkCarbonGrams,
-      networkEnergyKwh: estimate.totalNetworkEnergyKwh,
-      cpuTimeMs: estimate.totalCpuTimeMs,
-      cpuEnergyKwh: estimate.totalCpuEnergyKwh,
-      cpuCarbonGrams: estimate.totalCpuCarbonGrams,
+      swdm: buildSwdmReportBreakdown(estimate.swdmSegments, estimate.userDeviceOperationalSource),
+      cpu: buildCpuDetails(estimate),
+      sources,
       networkBytes: estimate.networkBytes,
       topResources: estimate.resourceImpacts.slice(0, 5),
       suggestions,
+      modelInputs: {
+        resolvedGridIntensity: estimate.resolvedGridIntensity,
+        userDeviceOperationalSource: estimate.userDeviceOperationalSource,
+        greenHostingFactor,
+        greenHostingFactorSource,
+        returnVisitorRatio: clampedReturnVisitorRatio,
+        returnVisitorRatioSource,
+        newVisitorRatio,
+        ...(explicitDataCacheRatio !== undefined
+          ? {
+              dataCacheRatio: explicitDataCacheRatio,
+              dataCacheRatioSource: explicitDataCacheRatioSource,
+            }
+          : {}),
+      },
     };
   }
 
   const firstMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'new-user');
   const returningMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'returning-user');
 
-  const firstEstimate = estimateCarbon(firstMetrics, { cpuWatts });
-  const returningEstimate = estimateCarbon(returningMetrics, { cpuWatts });
+  const firstEstimate = estimateCarbon(firstMetrics, { cpuWatts, gridIntensity, greenHostingFactor });
+  const returningEstimate = estimateCarbon(returningMetrics, { cpuWatts, gridIntensity, greenHostingFactor });
+
+  const derivedDataCacheRatio = deriveDataCacheRatio(
+    firstEstimate.networkBytes,
+    returningEstimate.networkBytes,
+  );
+  const dataCacheRatio = explicitDataCacheRatio ?? derivedDataCacheRatio;
+  const dataCacheRatioSource: 'explicit' | 'derived' | undefined =
+    explicitDataCacheRatio !== undefined
+      ? explicitDataCacheRatioSource
+      : dataCacheRatio !== undefined
+        ? 'derived'
+        : undefined;
 
   const firstPartyDomain = getFirstPartyDomain(context);
   const suggestions = buildSuggestions(firstEstimate.resourceImpacts, firstPartyDomain);
 
-  const carbonDelta = returningEstimate.totalCarbonGrams - firstEstimate.totalCarbonGrams;
-  const energyDelta = returningEstimate.totalEnergyKwh - firstEstimate.totalEnergyKwh;
-  const networkCarbonDelta =
-    returningEstimate.totalNetworkCarbonGrams - firstEstimate.totalNetworkCarbonGrams;
-  const networkEnergyDelta =
-    returningEstimate.totalNetworkEnergyKwh - firstEstimate.totalNetworkEnergyKwh;
-  const cpuTimeDelta = returningEstimate.totalCpuTimeMs - firstEstimate.totalCpuTimeMs;
-  const cpuEnergyDelta = returningEstimate.totalCpuEnergyKwh - firstEstimate.totalCpuEnergyKwh;
-  const cpuCarbonDelta = returningEstimate.totalCpuCarbonGrams - firstEstimate.totalCpuCarbonGrams;
-  const bytesDelta = returningEstimate.networkBytes - firstEstimate.networkBytes;
+  const firstVisit = buildVisitReport(firstEstimate);
+  const returningVisit = buildVisitReport(returningEstimate);
+  const bytesDelta = returningVisit.networkBytes - firstVisit.networkBytes;
+  const representativeVisit = buildRepresentativeVisit(
+    firstEstimate,
+    returningEstimate,
+    newVisitorRatio,
+    clampedReturnVisitorRatio,
+  );
+  const delta = buildComparisonDelta(firstVisit, returningVisit, bytesDelta);
+  const comparison: ComparisonReport = {
+    firstVisit,
+    returningVisit,
+    representativeVisit,
+    delta,
+  };
+  const sources = buildReportSources(firstEstimate, cpuWatts, greenHostingFactor);
 
   return {
-    totalCarbonGrams: firstEstimate.totalCarbonGrams,
-    totalEnergyKwh: firstEstimate.totalEnergyKwh,
-    networkCarbonGrams: firstEstimate.totalNetworkCarbonGrams,
-    networkEnergyKwh: firstEstimate.totalNetworkEnergyKwh,
-    cpuTimeMs: firstEstimate.totalCpuTimeMs,
-    cpuEnergyKwh: firstEstimate.totalCpuEnergyKwh,
-    cpuCarbonGrams: firstEstimate.totalCpuCarbonGrams,
-    networkBytes: firstEstimate.networkBytes,
-    topResources: firstEstimate.resourceImpacts.slice(0, 5),
+    swdm: firstVisit.swdm,
+    cpu: firstVisit.cpu,
+    sources,
+    networkBytes: firstVisit.networkBytes,
+    topResources: firstVisit.topResources,
     suggestions,
-    comparison: {
-      firstVisit: {
-        totalCarbonGrams: firstEstimate.totalCarbonGrams,
-        totalEnergyKwh: firstEstimate.totalEnergyKwh,
-        networkCarbonGrams: firstEstimate.totalNetworkCarbonGrams,
-        networkEnergyKwh: firstEstimate.totalNetworkEnergyKwh,
-        cpuTimeMs: firstEstimate.totalCpuTimeMs,
-        cpuEnergyKwh: firstEstimate.totalCpuEnergyKwh,
-        cpuCarbonGrams: firstEstimate.totalCpuCarbonGrams,
-        networkBytes: firstEstimate.networkBytes,
-        topResources: firstEstimate.resourceImpacts.slice(0, 5),
+    modelInputs: {
+      resolvedGridIntensity: firstEstimate.resolvedGridIntensity,
+      userDeviceOperationalSource: firstEstimate.userDeviceOperationalSource,
+      greenHostingFactor,
+      greenHostingFactorSource,
+      returnVisitorRatio: clampedReturnVisitorRatio,
+      returnVisitorRatioSource,
+      newVisitorRatio,
+      dataCacheRatio,
+      dataCacheRatioSource,
+    },
+    comparison,
+  };
+}
+
+export function buildRepresentativeVisit(
+  firstEstimate: ReturnType<typeof estimateCarbon>,
+  returningEstimate: ReturnType<typeof estimateCarbon>,
+  newVisitorRatio: number,
+  returnVisitorRatio: number,
+): NonNullable<ImpactTraceReport['comparison']>['representativeVisit'] {
+  const blendedSwdmSegments = blendSwdmSegments(
+    firstEstimate.swdmSegments,
+    returningEstimate.swdmSegments,
+    newVisitorRatio,
+    returnVisitorRatio,
+  );
+
+  return {
+    weights: {
+      newVisitorRatio,
+      returnVisitorRatio,
+    },
+    swdm: buildSwdmReportBreakdown(blendedSwdmSegments),
+    cpu: {
+      timeMs:
+        firstEstimate.totalCpuTimeMs * newVisitorRatio +
+        returningEstimate.totalCpuTimeMs * returnVisitorRatio,
+      energyKwh:
+        firstEstimate.totalCpuEnergyKwh * newVisitorRatio +
+        returningEstimate.totalCpuEnergyKwh * returnVisitorRatio,
+      carbonGrams:
+        firstEstimate.totalCpuCarbonGrams * newVisitorRatio +
+        returningEstimate.totalCpuCarbonGrams * returnVisitorRatio,
+    },
+    networkBytes:
+      firstEstimate.networkBytes * newVisitorRatio +
+      returningEstimate.networkBytes * returnVisitorRatio,
+  };
+}
+
+function buildVisitReport(estimate: ReturnType<typeof estimateCarbon>): VisitReport {
+  return {
+    swdm: buildSwdmReportBreakdown(estimate.swdmSegments, estimate.userDeviceOperationalSource),
+    cpu: buildCpuDetails(estimate),
+    networkBytes: estimate.networkBytes,
+    topResources: estimate.resourceImpacts.slice(0, 5),
+  };
+}
+
+function buildCpuDetails(estimate: ReturnType<typeof estimateCarbon>): CpuDetails {
+  return {
+    timeMs: estimate.totalCpuTimeMs,
+    energyKwh: estimate.totalCpuEnergyKwh,
+    carbonGrams: estimate.totalCpuCarbonGrams,
+    sourceId: toOperationalSourceId(estimate.userDeviceOperationalSource),
+  };
+}
+
+function toOperationalSourceId(source: 'co2-transfer' | 'cpu-profiler'): EvidenceSourceId {
+  return source === 'cpu-profiler' ? 'browser-cpu-profiler' : 'co2-transfer';
+}
+
+function buildSwdmReportBreakdown(
+  segments: ReturnType<typeof estimateCarbon>['swdmSegments'],
+  userDeviceOperationalSource: 'co2-transfer' | 'cpu-profiler' = 'co2-transfer',
+): SwdmReportBreakdown {
+  const dataCentersOperational = {
+    carbonGrams: segments.dataCenters.operationalCarbonGrams,
+    energyKwh: segments.dataCenters.operationalEnergyKwh,
+    sourceId: 'co2-transfer',
+  } as const;
+  const networksOperational = {
+    carbonGrams: segments.networks.operationalCarbonGrams,
+    energyKwh: segments.networks.operationalEnergyKwh,
+    sourceId: 'co2-transfer',
+  } as const;
+  const userDevicesOperational = {
+    carbonGrams: segments.userDevices.operationalCarbonGrams,
+    energyKwh: segments.userDevices.operationalEnergyKwh,
+    sourceId: toOperationalSourceId(userDeviceOperationalSource),
+  } as const;
+
+  const dataCentersEmbodied = {
+    carbonGrams: segments.dataCenters.embodiedCarbonGrams,
+    energyKwh: segments.dataCenters.embodiedEnergyKwh,
+    sourceId: 'co2-transfer',
+  } as const;
+  const networksEmbodied = {
+    carbonGrams: segments.networks.embodiedCarbonGrams,
+    energyKwh: segments.networks.embodiedEnergyKwh,
+    sourceId: 'co2-transfer',
+  } as const;
+  const userDevicesEmbodied = {
+    carbonGrams: segments.userDevices.embodiedCarbonGrams,
+    energyKwh: segments.userDevices.embodiedEnergyKwh,
+    sourceId: 'co2-transfer',
+  } as const;
+
+  const operationalTotal = {
+    carbonGrams:
+      dataCentersOperational.carbonGrams +
+      networksOperational.carbonGrams +
+      userDevicesOperational.carbonGrams,
+    energyKwh:
+      dataCentersOperational.energyKwh +
+      networksOperational.energyKwh +
+      userDevicesOperational.energyKwh,
+  };
+
+  const embodiedTotal = {
+    carbonGrams:
+      dataCentersEmbodied.carbonGrams +
+      networksEmbodied.carbonGrams +
+      userDevicesEmbodied.carbonGrams,
+    energyKwh:
+      dataCentersEmbodied.energyKwh +
+      networksEmbodied.energyKwh +
+      userDevicesEmbodied.energyKwh,
+  };
+
+  return {
+    total: {
+      carbonGrams: operationalTotal.carbonGrams + embodiedTotal.carbonGrams,
+      energyKwh: operationalTotal.energyKwh + embodiedTotal.energyKwh,
+    },
+    operational: {
+      total: operationalTotal,
+      dataCenters: dataCentersOperational,
+      networks: networksOperational,
+      userDevices: userDevicesOperational,
+    },
+    embodied: {
+      total: embodiedTotal,
+      dataCenters: dataCentersEmbodied,
+      networks: networksEmbodied,
+      userDevices: userDevicesEmbodied,
+    },
+  };
+}
+
+function buildReportSources(
+  estimate: ReturnType<typeof estimateCarbon>,
+  cpuWatts: number,
+  greenHostingFactor: number,
+): ReportSources {
+  return {
+    'browser-cpu-profiler': {
+      kind: 'cpu-profiler',
+      cpuWatts,
+    },
+    'co2-transfer': {
+      kind: 'transfer-model',
+      model: 'swd-v4',
+      greenHostingFactor,
+      ...(estimate.resolvedGridIntensity ? { gridIntensity: estimate.resolvedGridIntensity } : {}),
+    },
+  };
+}
+
+function buildComparisonDelta(
+  firstVisit: VisitReport,
+  returningVisit: VisitReport,
+  bytesDelta: number,
+): ComparisonDeltaReport {
+  return {
+    absolute: {
+      swdm: subtractSwdmBreakdown(returningVisit.swdm, firstVisit.swdm),
+      cpu: {
+        timeMs: returningVisit.cpu.timeMs - firstVisit.cpu.timeMs,
+        energyKwh: returningVisit.cpu.energyKwh - firstVisit.cpu.energyKwh,
+        carbonGrams: returningVisit.cpu.carbonGrams - firstVisit.cpu.carbonGrams,
       },
-      returningVisit: {
-        totalCarbonGrams: returningEstimate.totalCarbonGrams,
-        totalEnergyKwh: returningEstimate.totalEnergyKwh,
-        networkCarbonGrams: returningEstimate.totalNetworkCarbonGrams,
-        networkEnergyKwh: returningEstimate.totalNetworkEnergyKwh,
-        cpuTimeMs: returningEstimate.totalCpuTimeMs,
-        cpuEnergyKwh: returningEstimate.totalCpuEnergyKwh,
-        cpuCarbonGrams: returningEstimate.totalCpuCarbonGrams,
-        networkBytes: returningEstimate.networkBytes,
-        topResources: returningEstimate.resourceImpacts.slice(0, 5),
+      networkBytes: bytesDelta,
+    },
+    percent: {
+      swdm: buildSwdmPercentBreakdown(firstVisit.swdm, returningVisit.swdm),
+      cpu: {
+        time: calculatePercentChange(firstVisit.cpu.timeMs, returningVisit.cpu.timeMs),
+        energy: calculatePercentChange(firstVisit.cpu.energyKwh, returningVisit.cpu.energyKwh),
+        carbon: calculatePercentChange(firstVisit.cpu.carbonGrams, returningVisit.cpu.carbonGrams),
       },
-      delta: {
-        carbonGrams: carbonDelta,
-        energyKwh: energyDelta,
-        networkCarbonGrams: networkCarbonDelta,
-        networkEnergyKwh: networkEnergyDelta,
-        cpuTimeMs: cpuTimeDelta,
-        cpuEnergyKwh: cpuEnergyDelta,
-        cpuCarbonGrams: cpuCarbonDelta,
-        networkBytes: bytesDelta,
-        carbonPercent: calculatePercentChange(firstEstimate.totalCarbonGrams, returningEstimate.totalCarbonGrams),
-        energyPercent: calculatePercentChange(firstEstimate.totalEnergyKwh, returningEstimate.totalEnergyKwh),
-        networkCarbonPercent: calculatePercentChange(
-          firstEstimate.totalNetworkCarbonGrams,
-          returningEstimate.totalNetworkCarbonGrams,
-        ),
-        networkEnergyPercent: calculatePercentChange(
-          firstEstimate.totalNetworkEnergyKwh,
-          returningEstimate.totalNetworkEnergyKwh,
-        ),
-        cpuTimePercent: calculatePercentChange(firstEstimate.totalCpuTimeMs, returningEstimate.totalCpuTimeMs),
-        cpuEnergyPercent: calculatePercentChange(
-          firstEstimate.totalCpuEnergyKwh,
-          returningEstimate.totalCpuEnergyKwh,
-        ),
-        cpuCarbonPercent: calculatePercentChange(
-          firstEstimate.totalCpuCarbonGrams,
-          returningEstimate.totalCpuCarbonGrams,
-        ),
-        networkPercent: calculatePercentChange(firstEstimate.networkBytes, returningEstimate.networkBytes),
+      networkBytes: calculatePercentChange(firstVisit.networkBytes, returningVisit.networkBytes),
+    },
+  };
+}
+
+function subtractSwdmBreakdown(
+  minuend: SwdmReportBreakdown,
+  subtrahend: SwdmReportBreakdown,
+): SwdmReportBreakdown {
+  return {
+    total: {
+      carbonGrams: minuend.total.carbonGrams - subtrahend.total.carbonGrams,
+      energyKwh: minuend.total.energyKwh - subtrahend.total.energyKwh,
+    },
+    operational: {
+      total: {
+        carbonGrams: minuend.operational.total.carbonGrams - subtrahend.operational.total.carbonGrams,
+        energyKwh: minuend.operational.total.energyKwh - subtrahend.operational.total.energyKwh,
+      },
+      dataCenters: {
+        carbonGrams:
+          minuend.operational.dataCenters.carbonGrams - subtrahend.operational.dataCenters.carbonGrams,
+        energyKwh: minuend.operational.dataCenters.energyKwh - subtrahend.operational.dataCenters.energyKwh,
+      },
+      networks: {
+        carbonGrams: minuend.operational.networks.carbonGrams - subtrahend.operational.networks.carbonGrams,
+        energyKwh: minuend.operational.networks.energyKwh - subtrahend.operational.networks.energyKwh,
+      },
+      userDevices: {
+        carbonGrams:
+          minuend.operational.userDevices.carbonGrams - subtrahend.operational.userDevices.carbonGrams,
+        energyKwh: minuend.operational.userDevices.energyKwh - subtrahend.operational.userDevices.energyKwh,
+      },
+    },
+    embodied: {
+      total: {
+        carbonGrams: minuend.embodied.total.carbonGrams - subtrahend.embodied.total.carbonGrams,
+        energyKwh: minuend.embodied.total.energyKwh - subtrahend.embodied.total.energyKwh,
+      },
+      dataCenters: {
+        carbonGrams: minuend.embodied.dataCenters.carbonGrams - subtrahend.embodied.dataCenters.carbonGrams,
+        energyKwh: minuend.embodied.dataCenters.energyKwh - subtrahend.embodied.dataCenters.energyKwh,
+      },
+      networks: {
+        carbonGrams: minuend.embodied.networks.carbonGrams - subtrahend.embodied.networks.carbonGrams,
+        energyKwh: minuend.embodied.networks.energyKwh - subtrahend.embodied.networks.energyKwh,
+      },
+      userDevices: {
+        carbonGrams: minuend.embodied.userDevices.carbonGrams - subtrahend.embodied.userDevices.carbonGrams,
+        energyKwh: minuend.embodied.userDevices.energyKwh - subtrahend.embodied.userDevices.energyKwh,
       },
     },
   };
+}
+
+function buildSwdmPercentBreakdown(
+  first: SwdmReportBreakdown,
+  returning: SwdmReportBreakdown,
+): SwdmPercentBreakdown {
+  return {
+    total: {
+      carbon: calculatePercentChange(first.total.carbonGrams, returning.total.carbonGrams),
+      energy: calculatePercentChange(first.total.energyKwh, returning.total.energyKwh),
+    },
+    operational: {
+      total: {
+        carbon: calculatePercentChange(first.operational.total.carbonGrams, returning.operational.total.carbonGrams),
+        energy: calculatePercentChange(first.operational.total.energyKwh, returning.operational.total.energyKwh),
+      },
+      dataCenters: {
+        carbon: calculatePercentChange(
+          first.operational.dataCenters.carbonGrams,
+          returning.operational.dataCenters.carbonGrams,
+        ),
+        energy: calculatePercentChange(
+          first.operational.dataCenters.energyKwh,
+          returning.operational.dataCenters.energyKwh,
+        ),
+      },
+      networks: {
+        carbon: calculatePercentChange(
+          first.operational.networks.carbonGrams,
+          returning.operational.networks.carbonGrams,
+        ),
+        energy: calculatePercentChange(
+          first.operational.networks.energyKwh,
+          returning.operational.networks.energyKwh,
+        ),
+      },
+      userDevices: {
+        carbon: calculatePercentChange(
+          first.operational.userDevices.carbonGrams,
+          returning.operational.userDevices.carbonGrams,
+        ),
+        energy: calculatePercentChange(
+          first.operational.userDevices.energyKwh,
+          returning.operational.userDevices.energyKwh,
+        ),
+      },
+    },
+    embodied: {
+      total: {
+        carbon: calculatePercentChange(first.embodied.total.carbonGrams, returning.embodied.total.carbonGrams),
+        energy: calculatePercentChange(first.embodied.total.energyKwh, returning.embodied.total.energyKwh),
+      },
+      dataCenters: {
+        carbon: calculatePercentChange(first.embodied.dataCenters.carbonGrams, returning.embodied.dataCenters.carbonGrams),
+        energy: calculatePercentChange(first.embodied.dataCenters.energyKwh, returning.embodied.dataCenters.energyKwh),
+      },
+      networks: {
+        carbon: calculatePercentChange(first.embodied.networks.carbonGrams, returning.embodied.networks.carbonGrams),
+        energy: calculatePercentChange(first.embodied.networks.energyKwh, returning.embodied.networks.energyKwh),
+      },
+      userDevices: {
+        carbon: calculatePercentChange(first.embodied.userDevices.carbonGrams, returning.embodied.userDevices.carbonGrams),
+        energy: calculatePercentChange(first.embodied.userDevices.energyKwh, returning.embodied.userDevices.energyKwh),
+      },
+    },
+  };
+}
+
+function blendSwdmSegments(
+  first: ReturnType<typeof estimateCarbon>['swdmSegments'],
+  returning: ReturnType<typeof estimateCarbon>['swdmSegments'],
+  firstWeight: number,
+  returningWeight: number,
+): ReturnType<typeof estimateCarbon>['swdmSegments'] {
+  return {
+    dataCenters: {
+      operationalCarbonGrams:
+        first.dataCenters.operationalCarbonGrams * firstWeight +
+        returning.dataCenters.operationalCarbonGrams * returningWeight,
+      embodiedCarbonGrams:
+        first.dataCenters.embodiedCarbonGrams * firstWeight +
+        returning.dataCenters.embodiedCarbonGrams * returningWeight,
+      operationalEnergyKwh:
+        first.dataCenters.operationalEnergyKwh * firstWeight +
+        returning.dataCenters.operationalEnergyKwh * returningWeight,
+      embodiedEnergyKwh:
+        first.dataCenters.embodiedEnergyKwh * firstWeight +
+        returning.dataCenters.embodiedEnergyKwh * returningWeight,
+    },
+    networks: {
+      operationalCarbonGrams:
+        first.networks.operationalCarbonGrams * firstWeight +
+        returning.networks.operationalCarbonGrams * returningWeight,
+      embodiedCarbonGrams:
+        first.networks.embodiedCarbonGrams * firstWeight +
+        returning.networks.embodiedCarbonGrams * returningWeight,
+      operationalEnergyKwh:
+        first.networks.operationalEnergyKwh * firstWeight +
+        returning.networks.operationalEnergyKwh * returningWeight,
+      embodiedEnergyKwh:
+        first.networks.embodiedEnergyKwh * firstWeight +
+        returning.networks.embodiedEnergyKwh * returningWeight,
+    },
+    userDevices: {
+      operationalCarbonGrams:
+        first.userDevices.operationalCarbonGrams * firstWeight +
+        returning.userDevices.operationalCarbonGrams * returningWeight,
+      embodiedCarbonGrams:
+        first.userDevices.embodiedCarbonGrams * firstWeight +
+        returning.userDevices.embodiedCarbonGrams * returningWeight,
+      operationalEnergyKwh:
+        first.userDevices.operationalEnergyKwh * firstWeight +
+        returning.userDevices.operationalEnergyKwh * returningWeight,
+      embodiedEnergyKwh:
+        first.userDevices.embodiedEnergyKwh * firstWeight +
+        returning.userDevices.embodiedEnergyKwh * returningWeight,
+    },
+  };
+}
+
+export function deriveDataCacheRatio(firstBytes: number, returningBytes: number): number {
+  if (!Number.isFinite(firstBytes) || firstBytes <= 0) {
+    return 0;
+  }
+
+  return clampRatio(1 - returningBytes / firstBytes);
+}
+
+function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 1) {
+    return 1;
+  }
+
+  return value;
+}
+
+function mergeGridIntensityBySegment(
+  base?: GridIntensityConfig,
+  overrides?: GridIntensityConfig,
+): GridIntensityConfig | undefined {
+  if (!base && !overrides) {
+    return undefined;
+  }
+
+  const merged: GridIntensityConfig = {
+    ...(base ?? {}),
+    ...(overrides ?? {}),
+  };
+
+  if (merged.device === undefined && merged.network === undefined && merged.dataCenter === undefined) {
+    return undefined;
+  }
+
+  return merged;
 }
 
 function calculatePercentChange(baseValue: number, nextValue: number): number | null {

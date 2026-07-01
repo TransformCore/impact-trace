@@ -1,7 +1,15 @@
-import type { CarbonEstimate, CarbonMetric, ResourceImpact } from '../types/index.js';
+import type {
+  CarbonEstimate,
+  CarbonMetric,
+  GridIntensityConfig,
+  ResolvedGridIntensity,
+  ResourceImpact,
+  SwdmCategoryTotals,
+  SwdmSegmentsTotals,
+  TransferSegmentTotals,
+} from '../types/index.js';
 import { co2 as Co2Model } from '@tgwf/co2';
 
-export const ENERGY_PER_GB = 0.1;
 export const CARBON_INTENSITY = 300;
 export const DEFAULT_CPU_WATTS = 20;
 
@@ -15,41 +23,172 @@ interface SegmentedCo2Result {
   dataCenterCO2e?: number;
   networkCO2e?: number;
   consumerDeviceCO2e?: number;
+  dataCenterOperationalCO2e?: number;
+  networkOperationalCO2e?: number;
+  consumerDeviceOperationalCO2e?: number;
+  dataCenterEmbodiedCO2e?: number;
+  networkEmbodiedCO2e?: number;
+  consumerDeviceEmbodiedCO2e?: number;
+  totalOperationalCO2e?: number;
+  totalEmbodiedCO2e?: number;
 }
 
-export function bytesToKwh(bytes: number): number {
-  return (bytes / BYTES_PER_GB) * ENERGY_PER_GB;
+interface PerByteTraceVariables {
+  gridIntensity?: {
+    device?: { value?: number };
+    network?: { value?: number };
+    dataCenter?: { value?: number };
+  };
 }
 
 export function kwhToCarbonGrams(kwh: number): number {
   return kwh * CARBON_INTENSITY;
 }
 
-function bytesToNetworkCarbonGramsWithoutDevice(bytes: number): number {
+function bytesToNetworkCarbonGramsWithoutDevice(
+  bytes: number,
+  gridIntensity?: GridIntensityConfig,
+  greenHostingFactor = 0,
+): number {
+  const segments = applyGreenHostingFactorToSwdmSegments(
+    bytesToSwdmSegments(bytes, gridIntensity),
+    greenHostingFactor,
+  );
+  return (
+    segments.dataCenters.operationalCarbonGrams +
+    segments.dataCenters.embodiedCarbonGrams +
+    segments.networks.operationalCarbonGrams +
+    segments.networks.embodiedCarbonGrams
+  );
+}
+
+function emptyTransferSegmentTotals(): TransferSegmentTotals {
+  return {
+    deviceCarbonGrams: 0,
+    networkCarbonGrams: 0,
+    dataCenterCarbonGrams: 0,
+    deviceEnergyKwh: 0,
+    networkEnergyKwh: 0,
+    dataCenterEnergyKwh: 0,
+  };
+}
+
+function emptySwdmCategoryTotals(): SwdmCategoryTotals {
+  return {
+    operationalCarbonGrams: 0,
+    embodiedCarbonGrams: 0,
+    operationalEnergyKwh: 0,
+    embodiedEnergyKwh: 0,
+  };
+}
+
+function emptySwdmSegmentsTotals(): SwdmSegmentsTotals {
+  return {
+    dataCenters: emptySwdmCategoryTotals(),
+    networks: emptySwdmCategoryTotals(),
+    userDevices: emptySwdmCategoryTotals(),
+  };
+}
+
+function bytesToSwdmSegments(
+  bytes: number,
+  gridIntensity?: GridIntensityConfig,
+): SwdmSegmentsTotals {
   if (bytes <= 0) {
-    return 0;
+    return emptySwdmSegmentsTotals();
   }
 
-  try {
-    const trace = co2Model.perByteTrace(bytes, false);
-    const co2 = trace?.co2 as number | SegmentedCo2Result | undefined;
+  const traceOptions = gridIntensity ? { gridIntensity } : undefined;
+  const trace = traceOptions
+    ? co2Model.perByteTrace(bytes, false, traceOptions)
+    : co2Model.perByteTrace(bytes, false);
+  const co2 = trace?.co2 as number | SegmentedCo2Result | undefined;
 
-    if (typeof co2 === 'number') {
-      return co2;
-    }
-
-    const dataCenter = co2?.dataCenterCO2e ?? 0;
-    const network = co2?.networkCO2e ?? 0;
-    const segmentedWithoutDevice = dataCenter + network;
-    if (segmentedWithoutDevice > 0) {
-      return segmentedWithoutDevice;
-    }
-
-    return co2?.total ?? 0;
-  } catch {
-    // Keep deterministic fallback behavior if co2.js trace fails unexpectedly.
-    return kwhToCarbonGrams(bytesToKwh(bytes));
+  if (typeof co2 === 'number') {
+    const energyKwh = co2 / CARBON_INTENSITY;
+    return {
+      ...emptySwdmSegmentsTotals(),
+      networks: {
+        ...emptySwdmCategoryTotals(),
+        operationalCarbonGrams: co2,
+        operationalEnergyKwh: energyKwh,
+      },
+    };
   }
+
+  const operationalDataCenter = co2?.dataCenterOperationalCO2e ?? 0;
+  const operationalNetwork = co2?.networkOperationalCO2e ?? 0;
+  const operationalDevice = co2?.consumerDeviceOperationalCO2e ?? 0;
+  const operationalWithoutDevice = operationalDataCenter + operationalNetwork;
+  if (operationalWithoutDevice > 0) {
+    const embodiedDataCenter = co2?.dataCenterEmbodiedCO2e ?? 0;
+    const embodiedNetwork = co2?.networkEmbodiedCO2e ?? 0;
+    const embodiedDevice = co2?.consumerDeviceEmbodiedCO2e ?? 0;
+
+    return {
+      dataCenters: {
+        operationalCarbonGrams: operationalDataCenter,
+        embodiedCarbonGrams: embodiedDataCenter,
+        operationalEnergyKwh: operationalDataCenter / CARBON_INTENSITY,
+        embodiedEnergyKwh: embodiedDataCenter / CARBON_INTENSITY,
+      },
+      networks: {
+        operationalCarbonGrams: operationalNetwork,
+        embodiedCarbonGrams: embodiedNetwork,
+        operationalEnergyKwh: operationalNetwork / CARBON_INTENSITY,
+        embodiedEnergyKwh: embodiedNetwork / CARBON_INTENSITY,
+      },
+      userDevices: {
+        operationalCarbonGrams: operationalDevice,
+        embodiedCarbonGrams: embodiedDevice,
+        operationalEnergyKwh: operationalDevice / CARBON_INTENSITY,
+        embodiedEnergyKwh: embodiedDevice / CARBON_INTENSITY,
+      },
+    };
+  }
+
+  // Backward-compatible fallback if operational split keys are unavailable.
+  const dataCenter = co2?.dataCenterCO2e ?? 0;
+  const network = co2?.networkCO2e ?? 0;
+  const segmentedWithoutDevice = dataCenter + network;
+  if (segmentedWithoutDevice > 0) {
+    return {
+      ...emptySwdmSegmentsTotals(),
+      dataCenters: {
+        ...emptySwdmCategoryTotals(),
+        operationalCarbonGrams: dataCenter,
+        operationalEnergyKwh: dataCenter / CARBON_INTENSITY,
+      },
+      networks: {
+        ...emptySwdmCategoryTotals(),
+        operationalCarbonGrams: network,
+        operationalEnergyKwh: network / CARBON_INTENSITY,
+      },
+    };
+  }
+
+  const fallbackCarbon = co2?.total ?? 0;
+  return {
+    ...emptySwdmSegmentsTotals(),
+    networks: {
+      ...emptySwdmCategoryTotals(),
+      operationalCarbonGrams: fallbackCarbon,
+      operationalEnergyKwh: fallbackCarbon / CARBON_INTENSITY,
+    },
+  };
+}
+
+function swdmToTransferSegments(segments: SwdmSegmentsTotals): TransferSegmentTotals {
+  return {
+    deviceCarbonGrams:
+      segments.userDevices.operationalCarbonGrams + segments.userDevices.embodiedCarbonGrams,
+    networkCarbonGrams: segments.networks.operationalCarbonGrams + segments.networks.embodiedCarbonGrams,
+    dataCenterCarbonGrams:
+      segments.dataCenters.operationalCarbonGrams + segments.dataCenters.embodiedCarbonGrams,
+    deviceEnergyKwh: segments.userDevices.operationalEnergyKwh + segments.userDevices.embodiedEnergyKwh,
+    networkEnergyKwh: segments.networks.operationalEnergyKwh + segments.networks.embodiedEnergyKwh,
+    dataCenterEnergyKwh: segments.dataCenters.operationalEnergyKwh + segments.dataCenters.embodiedEnergyKwh,
+  };
 }
 
 export function cpuMsToKwh(cpuTimeMs: number, cpuWatts: number): number {
@@ -58,23 +197,63 @@ export function cpuMsToKwh(cpuTimeMs: number, cpuWatts: number): number {
 
 export interface EstimateCarbonOptions {
   cpuWatts?: number;
+  gridIntensity?: GridIntensityConfig;
+  greenHostingFactor?: number;
 }
 
 export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonOptions = {}): CarbonEstimate {
   const cpuWatts = options.cpuWatts ?? DEFAULT_CPU_WATTS;
+  const gridIntensity = options.gridIntensity;
+  const greenHostingFactor = clampRatio(options.greenHostingFactor ?? 0);
   const networkMetrics = metrics.filter((metric) => (metric.networkBytes ?? 0) > 0);
   const cpuMetrics = metrics.filter((metric) => (metric.cpuTimeMs ?? 0) > 0);
 
   const networkBytes = networkMetrics.reduce((sum, metric) => sum + (metric.networkBytes ?? 0), 0);
-  const totalNetworkCarbonGrams = bytesToNetworkCarbonGramsWithoutDevice(networkBytes);
-  const totalNetworkEnergyKwh = totalNetworkCarbonGrams / CARBON_INTENSITY;
+  const baseSwdmSegments = bytesToSwdmSegments(networkBytes, gridIntensity);
+
+  const resolvedGridIntensity = resolveGridIntensity(gridIntensity);
 
   const totalCpuTimeMs = cpuMetrics.reduce((sum, metric) => sum + (metric.cpuTimeMs ?? 0), 0);
   const totalCpuEnergyKwh = cpuMsToKwh(totalCpuTimeMs, cpuWatts);
   const totalCpuCarbonGrams = kwhToCarbonGrams(totalCpuEnergyKwh);
 
-  const totalEnergyKwh = totalNetworkEnergyKwh + totalCpuEnergyKwh;
-  const totalCarbonGrams = totalNetworkCarbonGrams + totalCpuCarbonGrams;
+  const useCpuForUserDevicesOperational = totalCpuTimeMs > 0;
+
+  const swdmSegments: SwdmSegmentsTotals = {
+    ...baseSwdmSegments,
+    userDevices: {
+      ...baseSwdmSegments.userDevices,
+      operationalCarbonGrams: useCpuForUserDevicesOperational
+        ? totalCpuCarbonGrams
+        : baseSwdmSegments.userDevices.operationalCarbonGrams,
+      operationalEnergyKwh: useCpuForUserDevicesOperational
+        ? totalCpuEnergyKwh
+        : baseSwdmSegments.userDevices.operationalEnergyKwh,
+    },
+  };
+
+  const adjustedSwdmSegments = applyGreenHostingFactorToSwdmSegments(swdmSegments, greenHostingFactor);
+
+  const totalNetworkCarbonGrams =
+    adjustedSwdmSegments.dataCenters.operationalCarbonGrams +
+    adjustedSwdmSegments.dataCenters.embodiedCarbonGrams +
+    adjustedSwdmSegments.networks.operationalCarbonGrams +
+    adjustedSwdmSegments.networks.embodiedCarbonGrams;
+  const totalNetworkEnergyKwh =
+    adjustedSwdmSegments.dataCenters.operationalEnergyKwh +
+    adjustedSwdmSegments.dataCenters.embodiedEnergyKwh +
+    adjustedSwdmSegments.networks.operationalEnergyKwh +
+    adjustedSwdmSegments.networks.embodiedEnergyKwh;
+
+  const totalUserDeviceCarbonGrams =
+    adjustedSwdmSegments.userDevices.operationalCarbonGrams + adjustedSwdmSegments.userDevices.embodiedCarbonGrams;
+  const totalUserDeviceEnergyKwh =
+    adjustedSwdmSegments.userDevices.operationalEnergyKwh + adjustedSwdmSegments.userDevices.embodiedEnergyKwh;
+
+  const transferSegments = swdmToTransferSegments(adjustedSwdmSegments);
+
+  const totalEnergyKwh = totalNetworkEnergyKwh + totalUserDeviceEnergyKwh;
+  const totalCarbonGrams = totalNetworkCarbonGrams + totalUserDeviceCarbonGrams;
 
   const resourceMap = new Map<string, ResourceImpact>();
 
@@ -94,13 +273,17 @@ export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonO
 
     if (existing) {
       existing.networkBytes += bytes;
-      existing.carbonGrams = bytesToNetworkCarbonGramsWithoutDevice(existing.networkBytes);
+      existing.carbonGrams = bytesToNetworkCarbonGramsWithoutDevice(
+        existing.networkBytes,
+        gridIntensity,
+        greenHostingFactor,
+      );
       existing.energyKwh = existing.carbonGrams / CARBON_INTENSITY;
       existing.cached = existing.cached ?? metric.metadata?.cached;
       continue;
     }
 
-    const carbonGrams = bytesToNetworkCarbonGramsWithoutDevice(bytes);
+    const carbonGrams = bytesToNetworkCarbonGramsWithoutDevice(bytes, gridIntensity, greenHostingFactor);
     const energyKwh = carbonGrams / CARBON_INTENSITY;
     resourceMap.set(key, {
       url,
@@ -121,6 +304,74 @@ export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonO
     totalCpuEnergyKwh,
     totalCpuCarbonGrams,
     networkBytes,
+    resolvedGridIntensity,
+    greenHostingFactor,
+    transferSegments,
+    swdmSegments: adjustedSwdmSegments,
+    userDeviceOperationalSource: useCpuForUserDevicesOperational ? 'cpu-profiler' : 'co2-transfer',
     resourceImpacts: [...resourceMap.values()].sort((a, b) => b.carbonGrams - a.carbonGrams),
   };
+}
+
+function applyGreenHostingFactorToSwdmSegments(
+  segments: SwdmSegmentsTotals,
+  greenHostingFactor: number,
+): SwdmSegmentsTotals {
+  if (greenHostingFactor <= 0) {
+    return segments;
+  }
+
+  const nonGreenShare = 1 - clampRatio(greenHostingFactor);
+  return {
+    ...segments,
+    dataCenters: {
+      ...segments.dataCenters,
+      operationalCarbonGrams: segments.dataCenters.operationalCarbonGrams * nonGreenShare,
+    },
+  };
+}
+
+function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (value < 0) {
+    return 0;
+  }
+
+  if (value > 1) {
+    return 1;
+  }
+
+  return value;
+}
+
+function resolveGridIntensity(gridIntensity?: GridIntensityConfig): ResolvedGridIntensity | undefined {
+  try {
+    const traceOptions = gridIntensity ? { gridIntensity } : undefined;
+    const trace = traceOptions
+      ? co2Model.perByteTrace(1, false, traceOptions)
+      : co2Model.perByteTrace(1, false);
+    const variables = trace?.variables as PerByteTraceVariables | undefined;
+
+    const device = variables?.gridIntensity?.device?.value;
+    const network = variables?.gridIntensity?.network?.value;
+    const dataCenter = variables?.gridIntensity?.dataCenter?.value;
+
+    if (
+      typeof device === 'number' &&
+      Number.isFinite(device) &&
+      typeof network === 'number' &&
+      Number.isFinite(network) &&
+      typeof dataCenter === 'number' &&
+      Number.isFinite(dataCenter)
+    ) {
+      return { device, network, dataCenter };
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
 }

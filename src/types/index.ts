@@ -38,6 +38,149 @@ export interface ResourceImpact {
   cached?: boolean;
 }
 
+export interface GridIntensityCountry {
+  country: string;
+}
+
+export type GridIntensitySegment = number | GridIntensityCountry;
+
+export interface GridIntensityConfig {
+  device?: GridIntensitySegment;
+  network?: GridIntensitySegment;
+  dataCenter?: GridIntensitySegment;
+}
+
+export interface TransferSegmentTotals {
+  deviceCarbonGrams: number;
+  networkCarbonGrams: number;
+  dataCenterCarbonGrams: number;
+  deviceEnergyKwh: number;
+  networkEnergyKwh: number;
+  dataCenterEnergyKwh: number;
+}
+
+export interface SwdmCategoryTotals {
+  operationalCarbonGrams: number;
+  embodiedCarbonGrams: number;
+  operationalEnergyKwh: number;
+  embodiedEnergyKwh: number;
+}
+
+export interface SwdmSegmentsTotals {
+  dataCenters: SwdmCategoryTotals;
+  networks: SwdmCategoryTotals;
+  userDevices: SwdmCategoryTotals;
+}
+
+export interface ResolvedGridIntensity {
+  device: number;
+  network: number;
+  dataCenter: number;
+}
+
+export type AverageMode = 'mean' | 'median' | 'trimmed-mean';
+
+export type ModelInputSource = 'default' | 'explicit' | 'derived';
+
+export type EvidenceSourceId = 'browser-cpu-profiler' | 'co2-transfer' | string;
+
+export interface SwdmLeafValue {
+  carbonGrams: number;
+  energyKwh: number;
+  sourceId?: EvidenceSourceId;
+}
+
+export interface SwdmRollupValue {
+  carbonGrams: number;
+  energyKwh: number;
+}
+
+export interface SwdmDimensionBreakdown {
+  total: SwdmRollupValue;
+  dataCenters: SwdmLeafValue;
+  networks: SwdmLeafValue;
+  userDevices: SwdmLeafValue;
+}
+
+export interface SwdmReportBreakdown {
+  total: SwdmRollupValue;
+  operational: SwdmDimensionBreakdown;
+  embodied: SwdmDimensionBreakdown;
+}
+
+export interface SwdmPercentValue {
+  carbon: number | null;
+  energy: number | null;
+}
+
+export interface SwdmPercentDimensionBreakdown {
+  total: SwdmPercentValue;
+  dataCenters: SwdmPercentValue;
+  networks: SwdmPercentValue;
+  userDevices: SwdmPercentValue;
+}
+
+export interface SwdmPercentBreakdown {
+  total: SwdmPercentValue;
+  operational: SwdmPercentDimensionBreakdown;
+  embodied: SwdmPercentDimensionBreakdown;
+}
+
+export interface CpuDetails {
+  timeMs: number;
+  energyKwh: number;
+  carbonGrams: number;
+  sourceId?: EvidenceSourceId;
+}
+
+export interface ReportSource {
+  kind: 'cpu-profiler' | 'transfer-model';
+  [key: string]: unknown;
+}
+
+export type ReportSources = Record<string, ReportSource>;
+
+export interface VisitReport {
+  swdm: SwdmReportBreakdown;
+  cpu: CpuDetails;
+  networkBytes: number;
+  topResources: ResourceImpact[];
+}
+
+export interface RepresentativeVisitReport {
+  weights: {
+    newVisitorRatio: number;
+    returnVisitorRatio: number;
+  };
+  swdm: SwdmReportBreakdown;
+  cpu: CpuDetails;
+  networkBytes: number;
+}
+
+export interface ComparisonDeltaReport {
+  absolute: {
+    swdm: SwdmReportBreakdown;
+    cpu: CpuDetails;
+    networkBytes: number;
+  };
+  percent: {
+    swdm: SwdmPercentBreakdown;
+    cpu: {
+      time: number | null;
+      energy: number | null;
+      carbon: number | null;
+    };
+    networkBytes: number | null;
+  };
+}
+
+export interface ComparisonReport {
+  firstVisit: VisitReport;
+  returningVisit: VisitReport;
+  representativeVisit?: RepresentativeVisitReport;
+  delta: ComparisonDeltaReport;
+}
+
 export interface CarbonEstimate {
   totalEnergyKwh: number;
   totalCarbonGrams: number;
@@ -47,6 +190,11 @@ export interface CarbonEstimate {
   totalCpuEnergyKwh: number;
   totalCpuCarbonGrams: number;
   networkBytes: number;
+  resolvedGridIntensity?: ResolvedGridIntensity;
+  greenHostingFactor: number;
+  transferSegments: TransferSegmentTotals;
+  swdmSegments: SwdmSegmentsTotals;
+  userDeviceOperationalSource: 'co2-transfer' | 'cpu-profiler';
   resourceImpacts: ResourceImpact[];
 }
 
@@ -57,72 +205,42 @@ export interface DeveloperSuggestion {
 }
 
 export interface ImpactTraceReport {
-  totalCarbonGrams: number;
-  totalEnergyKwh: number;
-  networkCarbonGrams: number;
-  networkEnergyKwh: number;
-  cpuTimeMs: number;
-  cpuEnergyKwh: number;
-  cpuCarbonGrams: number;
+  swdm: SwdmReportBreakdown;
+  cpu: CpuDetails;
+  sources: ReportSources;
   networkBytes: number;
   topResources: ResourceImpact[];
   suggestions: DeveloperSuggestion[];
-  urlBreakdown?: UrlBreakdown[];
-  comparison?: {
-    firstVisit: {
-      totalCarbonGrams: number;
-      totalEnergyKwh: number;
-      networkCarbonGrams: number;
-      networkEnergyKwh: number;
-      cpuTimeMs: number;
-      cpuEnergyKwh: number;
-      cpuCarbonGrams: number;
-      networkBytes: number;
-      topResources: ResourceImpact[];
-    };
-    returningVisit: {
-      totalCarbonGrams: number;
-      totalEnergyKwh: number;
-      networkCarbonGrams: number;
-      networkEnergyKwh: number;
-      cpuTimeMs: number;
-      cpuEnergyKwh: number;
-      cpuCarbonGrams: number;
-      networkBytes: number;
-      topResources: ResourceImpact[];
-    };
-    delta: {
-      carbonGrams: number;
-      energyKwh: number;
-      networkCarbonGrams: number;
-      networkEnergyKwh: number;
-      cpuTimeMs: number;
-      cpuEnergyKwh: number;
-      cpuCarbonGrams: number;
-      networkBytes: number;
-      carbonPercent: number | null;
-      energyPercent: number | null;
-      networkCarbonPercent: number | null;
-      networkEnergyPercent: number | null;
-      cpuTimePercent: number | null;
-      cpuEnergyPercent: number | null;
-      cpuCarbonPercent: number | null;
-      networkPercent: number | null;
+  modelInputs?: {
+    resolvedGridIntensity?: ResolvedGridIntensity;
+    userDeviceOperationalSource?: 'co2-transfer' | 'cpu-profiler';
+    greenHostingFactor?: number;
+    greenHostingFactorSource?: ModelInputSource;
+    returnVisitorRatio?: number;
+    returnVisitorRatioSource?: ModelInputSource;
+    newVisitorRatio?: number;
+    dataCacheRatio?: number;
+    dataCacheRatioSource?: ModelInputSource;
+    repeatAveraging?: {
+      repeat: number;
+      warmup: number;
+      averageMode: AverageMode;
+      trimPercent: number;
+      sampleCount: number;
     };
   };
+  urlBreakdown?: UrlBreakdown[];
+  comparison?: ComparisonReport;
 }
 
 export interface UrlBreakdown {
   url: string;
-  totalCarbonGrams: number;
-  totalEnergyKwh: number;
-  networkCarbonGrams: number;
-  networkEnergyKwh: number;
-  cpuTimeMs: number;
-  cpuEnergyKwh: number;
-  cpuCarbonGrams: number;
+  swdm: SwdmReportBreakdown;
+  cpu: CpuDetails;
+  sources: ReportSources;
   networkBytes: number;
   topResources: ResourceImpact[];
   suggestions: DeveloperSuggestion[];
-  comparison?: ImpactTraceReport['comparison'];
+  modelInputs?: ImpactTraceReport['modelInputs'];
+  comparison?: ComparisonReport;
 }

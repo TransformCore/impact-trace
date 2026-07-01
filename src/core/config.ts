@@ -1,18 +1,37 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { GridIntensityConfig, GridIntensitySegment } from '../types/index.js';
 
 const CONFIG_FILE_NAME = 'impact-trace.config.json';
 const DEFAULT_CPU_WATTS = 20;
 const DEFAULT_CPU_MEASUREMENT_SECONDS = 3;
+const DEFAULT_GREEN_HOSTING_FACTOR = 0;
+const DEFAULT_RETURN_VISITOR_RATIO = 0.75;
 
 interface ImpactTraceConfigFile {
   cpuWatts?: unknown;
   cpuMeasurementSeconds?: unknown;
+  greenHostingFactor?: unknown;
+  returnVisitorRatio?: unknown;
+  dataCacheRatio?: unknown;
+  gridIntensity?: {
+    device?: unknown;
+    network?: unknown;
+    networks?: unknown;
+    dataCenter?: unknown;
+  };
 }
 
 export interface RuntimeConfig {
   cpuWatts: number;
   cpuMeasurementSeconds: number;
+  greenHostingFactor: number;
+  greenHostingFactorSource: 'default' | 'explicit';
+  returnVisitorRatio: number;
+  returnVisitorRatioSource: 'default' | 'explicit';
+  dataCacheRatio?: number;
+  dataCacheRatioSource?: 'explicit';
+  gridIntensity?: GridIntensityConfig;
 }
 
 export interface ResolveRuntimeConfigOptions {
@@ -31,10 +50,41 @@ export async function resolveRuntimeConfig(
   const envCpuMeasurementSeconds = parsePositiveNumber(process.env.IMPACT_TRACE_CPU_MEASUREMENT_SECONDS);
   const fileCpuMeasurementSeconds = parsePositiveNumber(fileConfig?.cpuMeasurementSeconds);
 
+  const fileGridIntensity = parseGridIntensityConfig(fileConfig?.gridIntensity);
+  const envGridIntensity = parseGridIntensityFromEnv();
+  const mergedGridIntensity = mergeGridIntensityBySegment(fileGridIntensity, envGridIntensity);
+
+  const fileGreenHostingFactor = parseRatio(fileConfig?.greenHostingFactor);
+  const envGreenHostingFactor = parseRatio(process.env.IMPACT_TRACE_GREEN_HOSTING_FACTOR);
+  const resolvedGreenHostingFactor =
+    envGreenHostingFactor ?? fileGreenHostingFactor ?? DEFAULT_GREEN_HOSTING_FACTOR;
+  const greenHostingFactorSource: 'default' | 'explicit' =
+    envGreenHostingFactor !== undefined || fileGreenHostingFactor !== undefined ? 'explicit' : 'default';
+
+  const fileReturnVisitorRatio = parseRatio(fileConfig?.returnVisitorRatio);
+  const envReturnVisitorRatio = parseRatio(process.env.IMPACT_TRACE_RETURN_VISITOR_RATIO);
+  const resolvedReturnVisitorRatio =
+    envReturnVisitorRatio ?? fileReturnVisitorRatio ?? DEFAULT_RETURN_VISITOR_RATIO;
+  const returnVisitorRatioSource: 'default' | 'explicit' =
+    envReturnVisitorRatio !== undefined || fileReturnVisitorRatio !== undefined ? 'explicit' : 'default';
+
+  const fileDataCacheRatio = parseRatio(fileConfig?.dataCacheRatio);
+  const envDataCacheRatio = parseRatio(process.env.IMPACT_TRACE_DATA_CACHE_RATIO);
+  const resolvedDataCacheRatio = envDataCacheRatio ?? fileDataCacheRatio;
+  const dataCacheRatioSource: 'explicit' | undefined =
+    resolvedDataCacheRatio !== undefined ? 'explicit' : undefined;
+
   return {
     cpuWatts: envCpuWatts ?? fileCpuWatts ?? DEFAULT_CPU_WATTS,
     cpuMeasurementSeconds:
       envCpuMeasurementSeconds ?? fileCpuMeasurementSeconds ?? DEFAULT_CPU_MEASUREMENT_SECONDS,
+    greenHostingFactor: resolvedGreenHostingFactor,
+    greenHostingFactorSource,
+    returnVisitorRatio: resolvedReturnVisitorRatio,
+    returnVisitorRatioSource,
+    dataCacheRatio: resolvedDataCacheRatio,
+    dataCacheRatioSource,
+    gridIntensity: mergedGridIntensity,
   };
 }
 
@@ -66,6 +116,127 @@ function parsePositiveNumber(value: unknown): number | undefined {
   }
 
   return undefined;
+}
+
+function parseRatio(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function parseGridIntensityFromEnv(): GridIntensityConfig | undefined {
+  const device = parseGridIntensitySegment(
+    process.env.IMPACT_TRACE_GRID_INTENSITY_DEVICE,
+    process.env.IMPACT_TRACE_GRID_INTENSITY_DEVICE_COUNTRY,
+  );
+  const network = parseGridIntensitySegment(
+    process.env.IMPACT_TRACE_GRID_INTENSITY_NETWORK,
+    process.env.IMPACT_TRACE_GRID_INTENSITY_NETWORK_COUNTRY,
+  );
+  const dataCenter = parseGridIntensitySegment(
+    process.env.IMPACT_TRACE_GRID_INTENSITY_DATACENTER,
+    process.env.IMPACT_TRACE_GRID_INTENSITY_DATACENTER_COUNTRY,
+  );
+
+  return buildGridIntensityConfig(device, network, dataCenter);
+}
+
+function parseGridIntensityConfig(raw: ImpactTraceConfigFile['gridIntensity']): GridIntensityConfig | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const networkRaw = raw.network ?? raw.networks;
+  const device = parseGridIntensitySegmentFromUnknown(raw.device);
+  const network = parseGridIntensitySegmentFromUnknown(networkRaw);
+  const dataCenter = parseGridIntensitySegmentFromUnknown(raw.dataCenter);
+
+  return buildGridIntensityConfig(device, network, dataCenter);
+}
+
+function parseGridIntensitySegment(
+  valueInput: string | undefined,
+  countryInput: string | undefined,
+): GridIntensitySegment | undefined {
+  if (countryInput) {
+    const normalizedCountry = normalizeCountryCode(countryInput);
+    if (normalizedCountry) {
+      return { country: normalizedCountry };
+    }
+  }
+
+  return parsePositiveNumber(valueInput);
+}
+
+function parseGridIntensitySegmentFromUnknown(value: unknown): GridIntensitySegment | undefined {
+  if (typeof value === 'number') {
+    return parsePositiveNumber(value);
+  }
+
+  if (typeof value === 'string') {
+    return parsePositiveNumber(value);
+  }
+
+  if (typeof value === 'object' && value !== null && 'country' in value) {
+    const country = (value as { country?: unknown }).country;
+    if (typeof country === 'string') {
+      const normalizedCountry = normalizeCountryCode(country);
+      if (normalizedCountry) {
+        return { country: normalizedCountry };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function buildGridIntensityConfig(
+  device?: GridIntensitySegment,
+  network?: GridIntensitySegment,
+  dataCenter?: GridIntensitySegment,
+): GridIntensityConfig | undefined {
+  if (device === undefined && network === undefined && dataCenter === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(device !== undefined ? { device } : {}),
+    ...(network !== undefined ? { network } : {}),
+    ...(dataCenter !== undefined ? { dataCenter } : {}),
+  };
+}
+
+function mergeGridIntensityBySegment(
+  base?: GridIntensityConfig,
+  overrides?: GridIntensityConfig,
+): GridIntensityConfig | undefined {
+  if (!base && !overrides) {
+    return undefined;
+  }
+
+  return buildGridIntensityConfig(
+    overrides?.device ?? base?.device,
+    overrides?.network ?? base?.network,
+    overrides?.dataCenter ?? base?.dataCenter,
+  );
+}
+
+function normalizeCountryCode(value: string): string | undefined {
+  const normalized = value.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
 }
 
 function isMissingFileError(error: unknown): boolean {

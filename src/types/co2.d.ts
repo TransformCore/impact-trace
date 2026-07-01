@@ -19,6 +19,14 @@ declare module '@tgwf/co2' {
             dataCenterCO2e?: number;
             networkCO2e?: number;
             consumerDeviceCO2e?: number;
+            dataCenterOperationalCO2e?: number;
+            networkOperationalCO2e?: number;
+            consumerDeviceOperationalCO2e?: number;
+            dataCenterEmbodiedCO2e?: number;
+            networkEmbodiedCO2e?: number;
+            consumerDeviceEmbodiedCO2e?: number;
+            totalOperationalCO2e?: number;
+            totalEmbodiedCO2e?: number;
           };
       green: boolean;
       variables: Record<string, unknown>;

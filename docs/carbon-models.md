@@ -11,7 +11,12 @@ ImpactTrace now uses a **combined model**:
 
 Totals reported by the CLI are the sum of both components.
 
-For network transfer impact, ImpactTrace uses `@tgwf/co2` `perByteTrace()` with segmented results and excludes the consumer-device segment from the network model.
+For network transfer impact, ImpactTrace uses `@tgwf/co2` `perByteTrace()` with segmented results and defaults to **operational-only** emissions. Embodied emissions are excluded, and the consumer-device segment is excluded from the network model.
+
+Internally and in report output, totals are represented using SWDM-aligned segment/category matrices:
+
+- Segments: `dataCenters`, `networks`, `userDevices`
+- Categories: `operational`, `embodied`
 
 ## Constants in Use
 
@@ -37,14 +42,62 @@ Runtime CPU measurement window is resolved with precedence:
 
 CPU is measured from journey start and continues until at least the configured duration is reached. This helps include ongoing page activity such as animations.
 
+Runtime grid intensity overrides are resolved with precedence:
+
+1. CLI flags (`--grid-intensity-device`, `--grid-intensity-network`, `--grid-intensity-datacenter`)
+2. Environment variables (`IMPACT_TRACE_GRID_INTENSITY_DEVICE`, `IMPACT_TRACE_GRID_INTENSITY_NETWORK`, `IMPACT_TRACE_GRID_INTENSITY_DATACENTER`, and `*_COUNTRY` variants)
+3. Repo config file: impact-trace.config.json (`gridIntensity`)
+4. co2.js defaults
+
+Grid intensity values can be set per segment as:
+
+- Numeric intensity values
+- Country objects (for example `{ "country": "TWN" }`)
+
+The config also accepts `gridIntensity.networks` as an alias for `gridIntensity.network`.
+
+Resolved grid-intensity values used by co2.js are emitted in report JSON as `modelInputs.resolvedGridIntensity`.
+
+Runtime Green Hosting Factor and visitor/cache ratios are resolved with precedence:
+
+1. CLI flags (`--green-hosting-factor`, `--return-visitor-ratio`, `--data-cache-ratio`)
+2. Environment variables (`IMPACT_TRACE_GREEN_HOSTING_FACTOR`, `IMPACT_TRACE_RETURN_VISITOR_RATIO`, `IMPACT_TRACE_DATA_CACHE_RATIO`)
+3. Repo config file: impact-trace.config.json
+4. Defaults (`greenHostingFactor=0`, `returnVisitorRatio=0.75`)
+
+`newVisitorRatio` is derived as `1 - returnVisitorRatio`.
+
+In compare-cache mode, `dataCacheRatio` is derived when unspecified:
+
+- dataCacheRatio = clamp(1 - returningBytes / firstVisitBytes, 0, 1)
+
 ## Equations
 
 Given total transferred bytes B:
 
 - networkEnergyKwh = (B / BYTES_PER_GB) * ENERGY_PER_GB
-- networkCarbonGrams = co2.js perByteTrace(B).co2.dataCenterCO2e + co2.js perByteTrace(B).co2.networkCO2e
+- networkCarbonGrams = co2.js perByteTrace(B).co2.dataCenterOperationalCO2e + co2.js perByteTrace(B).co2.networkOperationalCO2e
 
-If segmented values are unavailable unexpectedly, ImpactTrace falls back to the prior deterministic bytes->kWh->carbon calculation.
+ImpactTrace reports SWDM segment/category totals across the board:
+
+- swdmSegments.dataCenters.operationalCarbonGrams / embodiedCarbonGrams
+- swdmSegments.networks.operationalCarbonGrams / embodiedCarbonGrams
+- swdmSegments.userDevices.operationalCarbonGrams / embodiedCarbonGrams
+- and the equivalent `operationalEnergyKwh` / `embodiedEnergyKwh` fields
+
+Green hosting adjustment:
+
+- adjustedDataCenterOperationalCarbon = dataCenterOperationalCarbon * (1 - greenHostingFactor)
+
+This adjustment applies to data-center operational carbon only; energy and embodied totals are unchanged.
+
+Notes:
+
+- Overall `networkCarbonGrams`/`networkEnergyKwh` remain intentionally non-device (`networks + dataCenters`) for continuity.
+- CPU totals remain separate in `cpu*` fields.
+- For compatibility, legacy `transferSegments.*` values are still emitted and derived from the SWDM representation.
+
+If operational segmented values are unavailable unexpectedly, ImpactTrace falls back to non-device segmented totals, then to the prior deterministic bytes->kWh->carbon calculation.
 
 Given total CPU time in milliseconds T and CPU watts W:
 
@@ -55,6 +108,12 @@ Combined totals:
 
 - totalEnergyKwh = networkEnergyKwh + cpuEnergyKwh
 - totalCarbonGrams = networkCarbonGrams + cpuCarbonGrams
+
+Compare-cache representative totals (audience-weighted):
+
+- representative = newVisitorRatio * firstVisit + returnVisitorRatio * returningVisit
+
+This applies to scalar totals and SWDM/transfer segment totals.
 
 ## What Gets Counted
 
@@ -100,7 +159,16 @@ impact-trace.config.json
 
 ```json
 {
-	"cpuWatts": 20
+	"cpuWatts": 20,
+	"cpuMeasurementSeconds": 3,
+	"greenHostingFactor": 0.3,
+	"returnVisitorRatio": 0.75,
+	"dataCacheRatio": 0.8,
+	"gridIntensity": {
+		"device": 565.629,
+		"dataCenter": { "country": "TWN" },
+		"network": 442
+	}
 }
 ```
 

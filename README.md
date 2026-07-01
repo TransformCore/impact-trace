@@ -25,6 +25,7 @@ It executes browser journeys with Playwright, captures resource/network data, es
 - Configurable CPU wattage model (env or repo config)
 - Configurable CPU measurement window to capture ongoing activity like animations (default 3s)
 - Optional CPU-off mode for network/asset-only reporting (`--no-cpu`)
+- Configurable segment grid intensity overrides (device, network, data center)
 
 ## Install
 
@@ -81,6 +82,7 @@ Console report includes:
 - CPU time (s)
 - CPU carbon and energy totals
 - Total network transfer (MB)
+- Transfer split by segment (device, network, data centre) for carbon and energy
 - Top contributors (asset path, size, estimated CO2)
 - Actionable suggestions
 
@@ -109,14 +111,56 @@ To disable CPU measurement entirely and use network transfer/asset size only:
 npx impact-trace run --url https://example.com --no-cpu
 ```
 
-Network transfer carbon is estimated via `@tgwf/co2` `perByteTrace()` segmented output and excludes consumer-device transfer emissions from the network component.
+Network transfer carbon is estimated via `@tgwf/co2` `perByteTrace()` segmented output and defaults to operational-only emissions. Embodied emissions and consumer-device transfer emissions are excluded from the network component.
+
+JSON output includes:
+
+- Resolved grid-intensity metadata at `modelInputs.resolvedGridIntensity`
+- User-device operational source metadata at `modelInputs.userDeviceOperationalSource`
+- SWDM segment/category totals at `swdmSegments` (dataCenters/networks/userDevices, each with operational and embodied carbon + energy)
+- In compare mode, SWDM totals are present in `comparison.firstVisit.swdmSegments`, `comparison.returningVisit.swdmSegments`, and `comparison.delta.swdmSegments`
+- Backward-compatible transfer totals remain at `transferSegments`
+- Green hosting / visitor/cache model inputs at `modelInputs.*` (including source metadata)
+- In compare mode, audience-weighted totals at `comparison.representativeVisit`
+
+Visitor/cache and hosting factors can be configured with this precedence:
+
+1. CLI flags (`--green-hosting-factor`, `--return-visitor-ratio`, `--data-cache-ratio`)
+2. Environment variables (`IMPACT_TRACE_GREEN_HOSTING_FACTOR`, `IMPACT_TRACE_RETURN_VISITOR_RATIO`, `IMPACT_TRACE_DATA_CACHE_RATIO`)
+3. Repo config file `impact-trace.config.json`
+4. Defaults (`greenHostingFactor=0`, `returnVisitorRatio=0.75`)
+
+`newVisitorRatio` is always derived as `1 - returnVisitorRatio`.
+
+In `--compare-cache` mode, `dataCacheRatio` is derived from first/returning network bytes when not explicitly provided.
+
+Grid intensity for co2.js segments can be overridden with this precedence:
+
+1. CLI flags (`--grid-intensity-device`, `--grid-intensity-network`, `--grid-intensity-datacenter`)
+2. Environment variables (`IMPACT_TRACE_GRID_INTENSITY_*`)
+3. Repo config file `impact-trace.config.json` (`gridIntensity`)
+4. co2.js defaults
+
+Segment override values support:
+
+- Positive numbers
+- Country objects (`{ "country": "TWN" }`) in config
+- ISO3 country strings (`TWN`) or `country:TWN` in CLI
 
 Example:
 
 ```json
 {
   "cpuWatts": 20,
-  "cpuMeasurementSeconds": 3
+  "cpuMeasurementSeconds": 3,
+  "greenHostingFactor": 0.3,
+  "returnVisitorRatio": 0.75,
+  "dataCacheRatio": 0.8,
+  "gridIntensity": {
+    "device": 565.629,
+    "dataCenter": { "country": "TWN" },
+    "network": 442
+  }
 }
 ```
 
