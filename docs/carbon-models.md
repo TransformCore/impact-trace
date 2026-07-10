@@ -7,7 +7,7 @@ This document describes the carbon impact model currently implemented in ImpactT
 ImpactTrace now uses a **combined model**:
 
 1. Network transfer impact (byte-based)
-2. Browser CPU impact (time-and-wattage based)
+2. Browser CPU impact (curve-based utilization to power)
 
 Totals reported by the CLI are the sum of both components.
 
@@ -26,12 +26,25 @@ From the implementation in src/models/carbonModel.ts:
 - CARBON_INTENSITY = 300 gCO2 per kWh
 - BYTES_PER_GB = 1,073,741,824 (1024^3)
 - DEFAULT_CPU_WATTS = 20 W
+- DEFAULT CPU curve profile = `if-default`
 
 Runtime CPU wattage is resolved with precedence:
 
 1. Environment variable: IMPACT_TRACE_CPU_WATTS
 2. Repo config file: impact-trace.config.json (cpuWatts)
 3. Default constant (20 W)
+
+Runtime CPU curve profile is resolved with precedence:
+
+1. CLI flag: `--cpu-curve-profile`
+2. Environment variable: `IMPACT_TRACE_CPU_CURVE_PROFILE`
+3. Repo config file: `impact-trace.config.json` (`cpuCurveProfile`)
+4. Default profile: `if-default`
+
+Built-in profiles:
+
+- `if-default`: `x=[0,10,50,100]`, `y=[0.12,0.32,0.75,1.02]`
+- `linear`: `x=[0,100]`, `y=[0,1]`
 
 Runtime CPU measurement window is resolved with precedence:
 
@@ -99,10 +112,12 @@ Notes:
 
 If operational segmented values are unavailable unexpectedly, ImpactTrace falls back to non-device segmented totals, then to the prior deterministic bytes->kWh->carbon calculation.
 
-Given total CPU time in milliseconds T and CPU watts W:
+Given total CPU time in milliseconds `T`, total CPU measurement window in milliseconds `Wm`, active cores `C`, curve points `(x, y)`, CPU watt baseline `W`, and CPU-to-device factor `F`:
 
-- cpuEnergyKwh = (T / 3,600,000) * (W / 1000)
-- cpuCarbonGrams = cpuEnergyKwh * CARBON_INTENSITY
+- cpuUtilizationPercent = clamp((T / (Wm * C)) * 100, 0, 100)
+- cpuPowerFactor = interpolate(cpuUtilizationPercent, x, y)
+- cpuDeviceEnergyKwh = ((W * cpuPowerFactor * Wm) / 3,600,000) / 1000 * F
+- cpuCarbonGrams = cpuDeviceEnergyKwh * CARBON_INTENSITY
 
 Combined totals:
 
@@ -160,6 +175,9 @@ impact-trace.config.json
 ```json
 {
 	"cpuWatts": 20,
+	"cpuCurveProfile": "if-default",
+	"cpuToDeviceEnergyFactor": 1,
+	"cpuActiveCores": 1,
 	"cpuMeasurementSeconds": 3,
 	"greenHostingFactor": 0.3,
 	"returnVisitorRatio": 0.75,

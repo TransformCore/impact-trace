@@ -1,15 +1,36 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { GridIntensityConfig, GridIntensitySegment } from '../types/index.js';
+import type { CpuCurveProfileId, GridIntensityConfig, GridIntensitySegment } from '../types/index.js';
 
 const CONFIG_FILE_NAME = 'impact-trace.config.json';
 const DEFAULT_CPU_WATTS = 20;
+const DEFAULT_CPU_TO_DEVICE_ENERGY_FACTOR = 1;
+const DEFAULT_CPU_ACTIVE_CORES = 1;
 const DEFAULT_CPU_MEASUREMENT_SECONDS = 3;
 const DEFAULT_GREEN_HOSTING_FACTOR = 0;
 const DEFAULT_RETURN_VISITOR_RATIO = 0.75;
+const CPU_CURVE_PROFILE_IF_DEFAULT: CpuCurveProfileId = 'if-default';
+
+const CPU_CURVES: Record<CpuCurveProfileId, { x: number[]; y: number[] }> = {
+  'if-default': {
+    x: [0, 10, 50, 100],
+    y: [0.12, 0.32, 0.75, 1.02],
+  },
+  linear: {
+    x: [0, 100],
+    y: [0, 1],
+  },
+};
 
 interface ImpactTraceConfigFile {
   cpuWatts?: unknown;
+  cpuCurveProfile?: unknown;
+  cpuCurve?: {
+    x?: unknown;
+    y?: unknown;
+  };
+  cpuToDeviceEnergyFactor?: unknown;
+  cpuActiveCores?: unknown;
   cpuMeasurementSeconds?: unknown;
   greenHostingFactor?: unknown;
   returnVisitorRatio?: unknown;
@@ -24,6 +45,14 @@ interface ImpactTraceConfigFile {
 
 export interface RuntimeConfig {
   cpuWatts: number;
+  cpuCurveProfile: CpuCurveProfileId;
+  cpuCurvePoints: {
+    x: number[];
+    y: number[];
+  };
+  cpuCurveSource: 'default' | 'explicit';
+  cpuToDeviceEnergyFactor: number;
+  cpuActiveCores: number;
   cpuMeasurementSeconds: number;
   greenHostingFactor: number;
   greenHostingFactorSource: 'default' | 'explicit';
@@ -46,6 +75,29 @@ export async function resolveRuntimeConfig(
   const envCpuWatts = parsePositiveNumber(process.env.IMPACT_TRACE_CPU_WATTS);
   const fileConfig = await readConfigFile(workingDirectory);
   const fileCpuWatts = parsePositiveNumber(fileConfig?.cpuWatts);
+
+  const envCpuCurveProfile = parseCpuCurveProfile(process.env.IMPACT_TRACE_CPU_CURVE_PROFILE);
+  const fileCpuCurveProfile = parseCpuCurveProfile(fileConfig?.cpuCurveProfile);
+  const resolvedCpuCurveProfile = envCpuCurveProfile ?? fileCpuCurveProfile ?? CPU_CURVE_PROFILE_IF_DEFAULT;
+
+  const envCpuCurveX = parseNumberArray(process.env.IMPACT_TRACE_CPU_CURVE_X);
+  const envCpuCurveY = parseNumberArray(process.env.IMPACT_TRACE_CPU_CURVE_Y);
+  const fileCpuCurveX = parseNumberArray(fileConfig?.cpuCurve?.x);
+  const fileCpuCurveY = parseNumberArray(fileConfig?.cpuCurve?.y);
+  const explicitCurveFromEnv = buildCpuCurvePoints(envCpuCurveX, envCpuCurveY);
+  const explicitCurveFromFile = buildCpuCurvePoints(fileCpuCurveX, fileCpuCurveY);
+  const explicitCurve = explicitCurveFromEnv ?? explicitCurveFromFile;
+  const cpuCurvePoints = explicitCurve ?? CPU_CURVES[resolvedCpuCurveProfile];
+  const cpuCurveSource: 'default' | 'explicit' =
+    explicitCurve || envCpuCurveProfile !== undefined || fileCpuCurveProfile !== undefined
+      ? 'explicit'
+      : 'default';
+
+  const envCpuToDeviceEnergyFactor = parsePositiveNumber(process.env.IMPACT_TRACE_CPU_TO_DEVICE_ENERGY_FACTOR);
+  const fileCpuToDeviceEnergyFactor = parsePositiveNumber(fileConfig?.cpuToDeviceEnergyFactor);
+
+  const envCpuActiveCores = parsePositiveNumber(process.env.IMPACT_TRACE_CPU_ACTIVE_CORES);
+  const fileCpuActiveCores = parsePositiveNumber(fileConfig?.cpuActiveCores);
 
   const envCpuMeasurementSeconds = parsePositiveNumber(process.env.IMPACT_TRACE_CPU_MEASUREMENT_SECONDS);
   const fileCpuMeasurementSeconds = parsePositiveNumber(fileConfig?.cpuMeasurementSeconds);
@@ -76,6 +128,12 @@ export async function resolveRuntimeConfig(
 
   return {
     cpuWatts: envCpuWatts ?? fileCpuWatts ?? DEFAULT_CPU_WATTS,
+    cpuCurveProfile: resolvedCpuCurveProfile,
+    cpuCurvePoints,
+    cpuCurveSource,
+    cpuToDeviceEnergyFactor:
+      envCpuToDeviceEnergyFactor ?? fileCpuToDeviceEnergyFactor ?? DEFAULT_CPU_TO_DEVICE_ENERGY_FACTOR,
+    cpuActiveCores: envCpuActiveCores ?? fileCpuActiveCores ?? DEFAULT_CPU_ACTIVE_CORES,
     cpuMeasurementSeconds:
       envCpuMeasurementSeconds ?? fileCpuMeasurementSeconds ?? DEFAULT_CPU_MEASUREMENT_SECONDS,
     greenHostingFactor: resolvedGreenHostingFactor,
@@ -85,6 +143,74 @@ export async function resolveRuntimeConfig(
     dataCacheRatio: resolvedDataCacheRatio,
     dataCacheRatioSource,
     gridIntensity: mergedGridIntensity,
+  };
+}
+
+function parseCpuCurveProfile(value: unknown): CpuCurveProfileId | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'if-default' || normalized === 'linear') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function parseNumberArray(value: unknown): number[] | undefined {
+  if (Array.isArray(value)) {
+    const parsed = value
+      .map((item) => parsePositiveOrZeroNumber(item))
+      .filter((item): item is number => item !== undefined);
+    return parsed.length > 0 ? parsed : undefined;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = value
+      .split(',')
+      .map((item) => parsePositiveOrZeroNumber(item.trim()))
+      .filter((item): item is number => item !== undefined);
+    return parsed.length > 0 ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function parsePositiveOrZeroNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function buildCpuCurvePoints(x?: number[], y?: number[]): { x: number[]; y: number[] } | undefined {
+  if (!x || !y) {
+    return undefined;
+  }
+
+  if (x.length < 2 || y.length < 2 || x.length !== y.length) {
+    return undefined;
+  }
+
+  for (let i = 1; i < x.length; i += 1) {
+    if (x[i] <= x[i - 1]) {
+      return undefined;
+    }
+  }
+
+  return {
+    x: [...x],
+    y: [...y],
   };
 }
 

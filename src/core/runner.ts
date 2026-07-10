@@ -9,12 +9,15 @@ import {
   clearBrowserCacheFromContext,
   endCpuMeasurementForRunLabel,
   getPageFromContext,
+  setCpuMeasurementModeInContext,
   setRunLabelInContext,
 } from '../plugins/browserPlugin.js';
 import type {
   CarbonMetric,
   ComparisonDeltaReport,
   ComparisonReport,
+  CpuCurveProfileId,
+  CpuMeasurementMode,
   CpuDetails,
   EvidenceSourceId,
   GridIntensityConfig,
@@ -36,6 +39,8 @@ export interface RunOptions {
   compareCache?: boolean;
   clearCacheBeforeFirstRun?: boolean;
   cpuMeasurementSeconds?: number;
+  cpuMode?: CpuMeasurementMode;
+  cpuCurveProfile?: CpuCurveProfileId;
   disableCpuMeasurement?: boolean;
   gridIntensity?: GridIntensityConfig;
   greenHostingFactor?: number;
@@ -51,6 +56,10 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
       ? options.cpuMeasurementSeconds
       : runtimeConfig.cpuMeasurementSeconds;
   const cpuMeasurementDurationMs = Math.round(cpuMeasurementSeconds * 1000);
+  const cpuMode: CpuMeasurementMode = options.cpuMode ?? 'thread-time';
+  const cpuCurveProfile: CpuCurveProfileId = options.cpuCurveProfile ?? runtimeConfig.cpuCurveProfile;
+  const cpuCurveSource: 'default' | 'explicit' =
+    options.cpuCurveProfile !== undefined ? 'explicit' : runtimeConfig.cpuCurveSource;
   const shouldMeasureCpu = !options.disableCpuMeasurement;
   const gridIntensity = mergeGridIntensityBySegment(runtimeConfig.gridIntensity, options.gridIntensity);
   const greenHostingFactor =
@@ -84,6 +93,7 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
 
   let executionError: unknown;
   await pluginSystem.startAll(context);
+  setCpuMeasurementModeInContext(context, cpuMode);
 
   try {
     const journey = await resolveJourney(options, journeyScriptPath);
@@ -128,6 +138,12 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
     context,
     options.compareCache ?? false,
     runtimeConfig.cpuWatts,
+    cpuCurveProfile,
+    runtimeConfig.cpuCurvePoints,
+    runtimeConfig.cpuToDeviceEnergyFactor,
+    runtimeConfig.cpuActiveCores,
+    cpuCurveSource,
+    cpuMode,
     gridIntensity,
     greenHostingFactor,
     greenHostingFactorSource,
@@ -177,6 +193,12 @@ function buildReportFromMetrics(
   context: RunContext,
   compareCache: boolean,
   cpuWatts: number,
+  cpuCurveProfile: CpuCurveProfileId,
+  cpuCurvePoints: { x: number[]; y: number[] },
+  cpuToDeviceEnergyFactor: number,
+  cpuActiveCores: number,
+  cpuCurveSource: 'default' | 'explicit',
+  cpuMeasurementMode: CpuMeasurementMode,
   gridIntensity?: GridIntensityConfig,
   greenHostingFactor = 0,
   greenHostingFactorSource: 'default' | 'explicit' = 'default',
@@ -189,7 +211,15 @@ function buildReportFromMetrics(
   const newVisitorRatio = 1 - clampedReturnVisitorRatio;
 
   if (!compareCache) {
-    const estimate = estimateCarbon(metrics, { cpuWatts, gridIntensity, greenHostingFactor });
+    const estimate = estimateCarbon(metrics, {
+      cpuWatts,
+      cpuCurveProfile,
+      cpuCurvePoints,
+      cpuToDeviceEnergyFactor,
+      cpuActiveCores,
+      gridIntensity,
+      greenHostingFactor,
+    });
 
     const firstPartyDomain = getFirstPartyDomain(context);
     const suggestions = buildSuggestions(estimate.resourceImpacts, firstPartyDomain);
@@ -203,6 +233,15 @@ function buildReportFromMetrics(
       topResources: estimate.resourceImpacts.slice(0, 5),
       suggestions,
       modelInputs: {
+        cpuMeasurementMode,
+        cpuCurveProfile,
+        cpuCurveSource,
+        cpuCurvePoints,
+        cpuPowerFactor: estimate.cpuPowerFactor,
+        cpuUtilizationPercent: estimate.cpuUtilizationPercent,
+        cpuMeasurementWindowMs: estimate.cpuMeasurementWindowMs,
+        cpuToDeviceEnergyFactor,
+        cpuActiveCores,
         resolvedGridIntensity: estimate.resolvedGridIntensity,
         userDeviceOperationalSource: estimate.userDeviceOperationalSource,
         greenHostingFactor,
@@ -223,8 +262,24 @@ function buildReportFromMetrics(
   const firstMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'new-user');
   const returningMetrics = metrics.filter((metric) => metric.metadata?.runLabel === 'returning-user');
 
-  const firstEstimate = estimateCarbon(firstMetrics, { cpuWatts, gridIntensity, greenHostingFactor });
-  const returningEstimate = estimateCarbon(returningMetrics, { cpuWatts, gridIntensity, greenHostingFactor });
+  const firstEstimate = estimateCarbon(firstMetrics, {
+    cpuWatts,
+    cpuCurveProfile,
+    cpuCurvePoints,
+    cpuToDeviceEnergyFactor,
+    cpuActiveCores,
+    gridIntensity,
+    greenHostingFactor,
+  });
+  const returningEstimate = estimateCarbon(returningMetrics, {
+    cpuWatts,
+    cpuCurveProfile,
+    cpuCurvePoints,
+    cpuToDeviceEnergyFactor,
+    cpuActiveCores,
+    gridIntensity,
+    greenHostingFactor,
+  });
 
   const derivedDataCacheRatio = deriveDataCacheRatio(
     firstEstimate.networkBytes,
@@ -267,6 +322,15 @@ function buildReportFromMetrics(
     topResources: firstVisit.topResources,
     suggestions,
     modelInputs: {
+      cpuMeasurementMode,
+      cpuCurveProfile,
+      cpuCurveSource,
+      cpuCurvePoints,
+      cpuPowerFactor: firstEstimate.cpuPowerFactor,
+      cpuUtilizationPercent: firstEstimate.cpuUtilizationPercent,
+      cpuMeasurementWindowMs: firstEstimate.cpuMeasurementWindowMs,
+      cpuToDeviceEnergyFactor,
+      cpuActiveCores,
       resolvedGridIntensity: firstEstimate.resolvedGridIntensity,
       userDeviceOperationalSource: firstEstimate.userDeviceOperationalSource,
       greenHostingFactor,
@@ -426,6 +490,13 @@ function buildReportSources(
     'browser-cpu-profiler': {
       kind: 'cpu-profiler',
       cpuWatts,
+      cpuCurveProfile: estimate.cpuCurveProfile,
+      cpuCurvePoints: estimate.cpuCurvePoints,
+      cpuPowerFactor: estimate.cpuPowerFactor,
+      cpuUtilizationPercent: estimate.cpuUtilizationPercent,
+      cpuMeasurementWindowMs: estimate.cpuMeasurementWindowMs,
+      cpuToDeviceEnergyFactor: estimate.cpuToDeviceEnergyFactor,
+      cpuActiveCores: estimate.cpuActiveCores,
     },
     'co2-transfer': {
       kind: 'transfer-model',
@@ -712,7 +783,10 @@ async function resolveJourney(options: RunOptions, journeyScriptPath: string): P
     }
 
     return async (page) => {
-      await page.goto(parsedUrl.href);
+      await page.goto(parsedUrl.href, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60_000,
+      });
     };
   }
 

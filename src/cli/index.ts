@@ -7,6 +7,8 @@ import { aggregateReportsForRepeats, normalizeTrimPercent } from '../core/statis
 import type {
   AverageMode,
   ComparisonReport,
+  CpuCurveProfileId,
+  CpuMeasurementMode,
   GridIntensityConfig,
   GridIntensitySegment,
   ImpactTraceReport,
@@ -24,6 +26,8 @@ interface CliArgs {
   compareCache: boolean;
   clearCacheBeforeFirstRun: boolean;
   cpuMeasurementSeconds?: number;
+  cpuMode?: CpuMeasurementMode;
+  cpuCurveProfile?: CpuCurveProfileId;
   disableCpuMeasurement: boolean;
   gridIntensity?: GridIntensityConfig;
   greenHostingFactor?: number;
@@ -99,6 +103,8 @@ async function main(): Promise<void> {
             compareCache: args.compareCache,
             clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
             cpuMeasurementSeconds: args.cpuMeasurementSeconds,
+            cpuMode: args.cpuMode,
+            cpuCurveProfile: args.cpuCurveProfile,
             disableCpuMeasurement: args.disableCpuMeasurement,
             gridIntensity: args.gridIntensity,
             greenHostingFactor: args.greenHostingFactor,
@@ -125,6 +131,8 @@ function parseArgs(argv: string[]): CliArgs {
   let compareCache = false;
   let clearCacheBeforeFirstRun = true;
   let cpuMeasurementSeconds: number | undefined;
+  let cpuMode: CpuMeasurementMode | undefined;
+  let cpuCurveProfile: CpuCurveProfileId | undefined;
   let disableCpuMeasurement = false;
   let gridIntensity: GridIntensityConfig | undefined;
   let greenHostingFactor: number | undefined;
@@ -156,6 +164,42 @@ function parseArgs(argv: string[]): CliArgs {
 
     if ((argv[i] === '--cpu-seconds' || argv[i] === '--cpu-measurement-seconds') && argv[i + 1]) {
       cpuMeasurementSeconds = Number.parseFloat(argv[i + 1]);
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-mode') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-mode. Use thread-time or process-info.';
+        continue;
+      }
+
+      const parsedCpuMode = parseCpuMeasurementMode(rawValue);
+      if (!parsedCpuMode) {
+        parseError = 'Invalid value for --cpu-mode. Use thread-time or process-info.';
+        continue;
+      }
+
+      cpuMode = parsedCpuMode;
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-curve-profile') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-curve-profile. Use if-default or linear.';
+        continue;
+      }
+
+      const parsedCpuCurveProfile = parseCpuCurveProfile(rawValue);
+      if (!parsedCpuCurveProfile) {
+        parseError = 'Invalid value for --cpu-curve-profile. Use if-default or linear.';
+        continue;
+      }
+
+      cpuCurveProfile = parsedCpuCurveProfile;
       i += 1;
       continue;
     }
@@ -304,6 +348,8 @@ function parseArgs(argv: string[]): CliArgs {
     compareCache,
     clearCacheBeforeFirstRun,
     cpuMeasurementSeconds,
+    cpuMode,
+    cpuCurveProfile,
     disableCpuMeasurement,
     gridIntensity,
     greenHostingFactor,
@@ -318,8 +364,8 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
+  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <if-default|linear>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
+  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <if-default|linear>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
 }
 
 function validateInputArgs(args: CliArgs): string[] {
@@ -508,6 +554,27 @@ function printModelInputs(modelInputs: ImpactTraceReport['modelInputs']): void {
     );
   }
 
+  if (modelInputs.cpuMeasurementMode !== undefined) {
+    lines.push(`CPU Measurement Mode: ${modelInputs.cpuMeasurementMode}`);
+  }
+
+  if (modelInputs.cpuCurveProfile !== undefined) {
+    const source = modelInputs.cpuCurveSource ?? 'default';
+    lines.push(`CPU Curve Profile: ${modelInputs.cpuCurveProfile} (${source})`);
+  }
+
+  if (modelInputs.cpuUtilizationPercent !== undefined) {
+    lines.push(`CPU Utilization: ${modelInputs.cpuUtilizationPercent.toFixed(2)}%`);
+  }
+
+  if (modelInputs.cpuPowerFactor !== undefined) {
+    lines.push(`CPU Power Factor: ${modelInputs.cpuPowerFactor.toFixed(3)}`);
+  }
+
+  if (modelInputs.cpuToDeviceEnergyFactor !== undefined) {
+    lines.push(`CPU->Device Energy Factor: ${modelInputs.cpuToDeviceEnergyFactor.toFixed(3)}`);
+  }
+
   if (modelInputs.dataCacheRatio !== undefined) {
     const source = modelInputs.dataCacheRatioSource ?? 'explicit';
     lines.push(`Data Cache Ratio: ${modelInputs.dataCacheRatio.toFixed(3)} (${source})`);
@@ -567,6 +634,8 @@ async function runMultiUrlMode(args: CliArgs, repeatOptions: RepeatExecutionOpti
           compareCache: args.compareCache,
           clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
           cpuMeasurementSeconds: args.cpuMeasurementSeconds,
+          cpuMode: args.cpuMode,
+          cpuCurveProfile: args.cpuCurveProfile,
           disableCpuMeasurement: args.disableCpuMeasurement,
           gridIntensity: args.gridIntensity,
           greenHostingFactor: args.greenHostingFactor,
@@ -649,6 +718,24 @@ function resolveRepeatExecutionOptions(args: CliArgs): RepeatExecutionOptions {
 function parseAverageMode(value: string): AverageMode | undefined {
   const normalized = value.trim().toLowerCase();
   if (normalized === 'mean' || normalized === 'median' || normalized === 'trimmed-mean') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function parseCpuMeasurementMode(value: string): CpuMeasurementMode | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'thread-time' || normalized === 'process-info') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function parseCpuCurveProfile(value: string): CpuCurveProfileId | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'if-default' || normalized === 'linear') {
     return normalized;
   }
 

@@ -1,5 +1,6 @@
 import type {
   CarbonEstimate,
+  CpuCurveProfileId,
   CarbonMetric,
   GridIntensityConfig,
   ResolvedGridIntensity,
@@ -12,6 +13,19 @@ import { co2 as Co2Model } from '@tgwf/co2';
 
 export const CARBON_INTENSITY = 300;
 export const DEFAULT_CPU_WATTS = 20;
+export const DEFAULT_CPU_CURVE_PROFILE: CpuCurveProfileId = 'if-default';
+export const DEFAULT_CPU_CURVE_POINTS: Record<CpuCurveProfileId, { x: number[]; y: number[] }> = {
+  'if-default': {
+    x: [0, 10, 50, 100],
+    y: [0.12, 0.32, 0.75, 1.02],
+  },
+  linear: {
+    x: [0, 100],
+    y: [0, 1],
+  },
+};
+export const DEFAULT_CPU_TO_DEVICE_ENERGY_FACTOR = 1;
+export const DEFAULT_CPU_ACTIVE_CORES = 1;
 
 const BYTES_PER_GB = 1024 * 1024 * 1024;
 const MS_PER_HOUR = 1000 * 60 * 60;
@@ -197,12 +211,94 @@ export function cpuMsToKwh(cpuTimeMs: number, cpuWatts: number): number {
 
 export interface EstimateCarbonOptions {
   cpuWatts?: number;
+  cpuCurveProfile?: CpuCurveProfileId;
+  cpuCurvePoints?: {
+    x: number[];
+    y: number[];
+  };
+  cpuToDeviceEnergyFactor?: number;
+  cpuActiveCores?: number;
   gridIntensity?: GridIntensityConfig;
   greenHostingFactor?: number;
 }
 
+function clampPositive(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return value;
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 100) {
+    return 100;
+  }
+  return value;
+}
+
+function resolveCpuCurve(
+  profile: CpuCurveProfileId,
+  curvePoints?: { x: number[]; y: number[] },
+): { x: number[]; y: number[] } {
+  if (
+    curvePoints &&
+    curvePoints.x.length >= 2 &&
+    curvePoints.x.length === curvePoints.y.length &&
+    curvePoints.x.every((value, index) => index === 0 || value > curvePoints.x[index - 1])
+  ) {
+    return {
+      x: [...curvePoints.x],
+      y: [...curvePoints.y],
+    };
+  }
+
+  return DEFAULT_CPU_CURVE_POINTS[profile];
+}
+
+function interpolateCurveFactor(utilizationPercent: number, x: number[], y: number[]): number {
+  if (x.length === 0 || y.length === 0 || x.length !== y.length) {
+    return 0;
+  }
+
+  const utilization = clampPercent(utilizationPercent);
+  if (utilization <= x[0]) {
+    return y[0];
+  }
+
+  const lastIndex = x.length - 1;
+  if (utilization >= x[lastIndex]) {
+    return y[lastIndex];
+  }
+
+  for (let i = 1; i < x.length; i += 1) {
+    if (utilization <= x[i]) {
+      const x0 = x[i - 1];
+      const x1 = x[i];
+      const y0 = y[i - 1];
+      const y1 = y[i];
+      const ratio = (utilization - x0) / (x1 - x0);
+      return y0 + (y1 - y0) * ratio;
+    }
+  }
+
+  return y[lastIndex];
+}
+
 export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonOptions = {}): CarbonEstimate {
-  const cpuWatts = options.cpuWatts ?? DEFAULT_CPU_WATTS;
+  const cpuWatts = clampPositive(options.cpuWatts ?? DEFAULT_CPU_WATTS, DEFAULT_CPU_WATTS);
+  const cpuCurveProfile = options.cpuCurveProfile ?? DEFAULT_CPU_CURVE_PROFILE;
+  const cpuCurvePoints = resolveCpuCurve(cpuCurveProfile, options.cpuCurvePoints);
+  const cpuToDeviceEnergyFactor = clampPositive(
+    options.cpuToDeviceEnergyFactor ?? DEFAULT_CPU_TO_DEVICE_ENERGY_FACTOR,
+    DEFAULT_CPU_TO_DEVICE_ENERGY_FACTOR,
+  );
+  const cpuActiveCores = clampPositive(options.cpuActiveCores ?? DEFAULT_CPU_ACTIVE_CORES, DEFAULT_CPU_ACTIVE_CORES);
   const gridIntensity = options.gridIntensity;
   const greenHostingFactor = clampRatio(options.greenHostingFactor ?? 0);
   const networkMetrics = metrics.filter((metric) => (metric.networkBytes ?? 0) > 0);
@@ -214,7 +310,18 @@ export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonO
   const resolvedGridIntensity = resolveGridIntensity(gridIntensity);
 
   const totalCpuTimeMs = cpuMetrics.reduce((sum, metric) => sum + (metric.cpuTimeMs ?? 0), 0);
-  const totalCpuEnergyKwh = cpuMsToKwh(totalCpuTimeMs, cpuWatts);
+  const measuredCpuWindowMs = cpuMetrics.reduce(
+    (sum, metric) => sum + (metric.metadata?.cpuMeasurementWindowMs ?? 0),
+    0,
+  );
+  const cpuMeasurementWindowMs = Math.max(measuredCpuWindowMs, totalCpuTimeMs);
+  const cpuUtilizationPercent =
+    cpuMeasurementWindowMs > 0
+      ? clampPercent((totalCpuTimeMs / (cpuMeasurementWindowMs * cpuActiveCores)) * 100)
+      : 0;
+  const cpuPowerFactor = interpolateCurveFactor(cpuUtilizationPercent, cpuCurvePoints.x, cpuCurvePoints.y);
+  const cpuWattage = cpuWatts * cpuPowerFactor;
+  const totalCpuEnergyKwh = cpuMsToKwh(cpuMeasurementWindowMs, cpuWattage) * cpuToDeviceEnergyFactor;
   const totalCpuCarbonGrams = kwhToCarbonGrams(totalCpuEnergyKwh);
 
   const useCpuForUserDevicesOperational = totalCpuTimeMs > 0;
@@ -309,6 +416,13 @@ export function estimateCarbon(metrics: CarbonMetric[], options: EstimateCarbonO
     transferSegments,
     swdmSegments: adjustedSwdmSegments,
     userDeviceOperationalSource: useCpuForUserDevicesOperational ? 'cpu-profiler' : 'co2-transfer',
+    cpuCurveProfile,
+    cpuCurvePoints,
+    cpuPowerFactor,
+    cpuUtilizationPercent,
+    cpuMeasurementWindowMs,
+    cpuToDeviceEnergyFactor,
+    cpuActiveCores,
     resourceImpacts: [...resourceMap.values()].sort((a, b) => b.carbonGrams - a.carbonGrams),
   };
 }

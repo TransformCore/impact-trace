@@ -11,6 +11,7 @@ export interface CarbonMetric {
     resourceType?: string;
     cached?: boolean;
     runLabel?: 'single-run' | 'new-user' | 'returning-user';
+    cpuMeasurementWindowMs?: number;
   };
 }
 
@@ -79,6 +80,8 @@ export interface ResolvedGridIntensity {
 }
 
 export type AverageMode = 'mean' | 'median' | 'trimmed-mean';
+export type CpuMeasurementMode = 'thread-time' | 'process-info';
+export type CpuCurveProfileId = 'if-default' | 'linear';
 
 export type ModelInputSource = 'default' | 'explicit' | 'derived';
 
@@ -195,6 +198,16 @@ export interface CarbonEstimate {
   transferSegments: TransferSegmentTotals;
   swdmSegments: SwdmSegmentsTotals;
   userDeviceOperationalSource: 'co2-transfer' | 'cpu-profiler';
+  cpuCurveProfile: CpuCurveProfileId;
+  cpuCurvePoints: {
+    x: number[];
+    y: number[];
+  };
+  cpuPowerFactor: number;
+  cpuUtilizationPercent: number;
+  cpuMeasurementWindowMs: number;
+  cpuToDeviceEnergyFactor: number;
+  cpuActiveCores: number;
   resourceImpacts: ResourceImpact[];
 }
 
@@ -212,6 +225,18 @@ export interface ImpactTraceReport {
   topResources: ResourceImpact[];
   suggestions: DeveloperSuggestion[];
   modelInputs?: {
+    cpuMeasurementMode?: CpuMeasurementMode;
+    cpuCurveProfile?: CpuCurveProfileId;
+    cpuCurveSource?: ModelInputSource;
+    cpuCurvePoints?: {
+      x: number[];
+      y: number[];
+    };
+    cpuPowerFactor?: number;
+    cpuUtilizationPercent?: number;
+    cpuMeasurementWindowMs?: number;
+    cpuToDeviceEnergyFactor?: number;
+    cpuActiveCores?: number;
     resolvedGridIntensity?: ResolvedGridIntensity;
     userDeviceOperationalSource?: 'co2-transfer' | 'cpu-profiler';
     greenHostingFactor?: number;

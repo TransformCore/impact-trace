@@ -42,6 +42,10 @@ Notes:
 - `--no-cpu`
   - Disables CPU measurement entirely.
   - Report totals become network/asset-transfer only for energy/carbon.
+- `--cpu-curve-profile <if-default|linear>`
+  - Selects the utilization-to-power curve profile used for CPU/device operational estimation.
+  - `if-default`: IF/Teads-style curve (`x=[0,10,50,100]`, `y=[0.12,0.32,0.75,1.02]`).
+  - `linear`: proportional curve (`x=[0,100]`, `y=[0,1]`).
 - `--grid-intensity-device <value>`
   - Overrides device-segment grid intensity used by co2.js.
   - `<value>` can be a positive number, ISO3 country code (for example `TWN`), or `country:<ISO3>`.
@@ -113,6 +117,12 @@ Disable CPU measurement:
 impact-trace run --url https://example.com --no-cpu
 ```
 
+Use linear CPU curve profile:
+
+```bash
+impact-trace run --url https://example.com --cpu-curve-profile linear
+```
+
 Segment grid-intensity overrides:
 
 ```bash
@@ -166,6 +176,12 @@ Reports include configurable factor metadata under:
 - `modelInputs.newVisitorRatio`
 - `modelInputs.dataCacheRatio`
 - `modelInputs.dataCacheRatioSource`
+- `modelInputs.cpuCurveProfile`
+- `modelInputs.cpuCurveSource`
+- `modelInputs.cpuUtilizationPercent`
+- `modelInputs.cpuPowerFactor`
+- `modelInputs.cpuMeasurementWindowMs`
+- `modelInputs.cpuToDeviceEnergyFactor`
 
 Reports include SWDM segment/category totals under `swdmSegments` for top-level totals, per-URL breakdown, and compare-cache first/returning/delta sections.
 
