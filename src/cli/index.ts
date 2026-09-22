@@ -60,6 +60,7 @@ interface CliArgs {
   baselinePath?: string;
   budgets?: ImpactBudgets;
   scoreThresholds?: Partial<ImpactScoreThresholds>;
+  findingsLimit?: number;
   parseError?: string;
 }
 
@@ -158,6 +159,10 @@ async function main(): Promise<void> {
     mergedOutputSettings.defaultFormat = args.format;
   }
 
+  if (args.findingsLimit !== undefined) {
+    mergedOutputSettings.findingsLimit = args.findingsLimit;
+  }
+
   const resolvedFormat = mergedOutputSettings.defaultFormat ?? args.format;
 
   const baselineReport = await loadBaselineReport(args.baselinePath);
@@ -213,6 +218,7 @@ function parseArgs(argv: string[]): CliArgs {
   let baselinePath: string | undefined;
   let budgets: ImpactBudgets | undefined;
   let scoreThresholds: Partial<ImpactScoreThresholds> | undefined;
+  let findingsLimit: number | undefined;
   let parseError: string | undefined;
 
   for (let i = 1; i < argv.length; i += 1) {
@@ -332,6 +338,24 @@ function parseArgs(argv: string[]): CliArgs {
       } else {
         parseError = 'Invalid value for --budget-third-party-mb. Use a positive number.';
       }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--findings-limit') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --findings-limit. Use a positive number, 0, or "all".';
+        continue;
+      }
+
+      const parsedFindingsLimit = parseFindingsLimitArg(rawValue);
+      if (parsedFindingsLimit === undefined) {
+        parseError = 'Invalid value for --findings-limit. Use a positive number, 0, or "all".';
+        continue;
+      }
+
+      findingsLimit = parsedFindingsLimit;
       i += 1;
       continue;
     }
@@ -631,13 +655,24 @@ function parseArgs(argv: string[]): CliArgs {
     baselinePath,
     budgets,
     scoreThresholds,
+    findingsLimit,
     parseError,
   };
 }
 
+function parseFindingsLimitArg(value: string): number | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'all' || normalized === 'unlimited' || normalized === 'none') {
+    return 0;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--wait-until <load|domcontentloaded|networkidle>] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>]');
+  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>] [--findings-limit <n|all>]');
+  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--wait-until <load|domcontentloaded|networkidle>] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>] [--findings-limit <n|all>]');
 }
 
 function parseUrlWaitUntil(value: string): UrlWaitUntil | undefined {
@@ -841,10 +876,13 @@ function printDeveloperConsole(output: ImpactTraceOutput, verbose: boolean): voi
   if (report.findings.length === 0) {
     console.log('1. No high-impact findings detected.');
   } else {
-    report.findings.slice(0, 3).forEach((finding, index) => {
+    report.findings.forEach((finding, index) => {
       console.log(`${index + 1}. ${finding.title}`);
       if (finding.assetUrl) {
         console.log(`   Asset: ${shortenUrl(finding.assetUrl)}`);
+      }
+      if (finding.transferBytes !== undefined) {
+        console.log(`   File Size: ${(finding.transferBytes / (1024 * 1024)).toFixed(2)} MB`);
       }
       if (finding.carbonGrams !== undefined) {
         console.log(`   Carbon Impact: ${finding.carbonGrams.toFixed(2)}g CO2`);

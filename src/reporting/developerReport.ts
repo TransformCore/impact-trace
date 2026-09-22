@@ -125,6 +125,19 @@ function resolveThresholds(input?: Partial<ImpactScoreThresholds>): ImpactScoreT
   };
 }
 
+const DEFAULT_FINDINGS_LIMIT = 5;
+
+// A configured limit of 0 means "no limit" (return every finding).
+function resolveFindingsLimit(value?: number): number | undefined {
+  if (value === undefined || !Number.isInteger(value) || value < 0) {
+    return DEFAULT_FINDINGS_LIMIT;
+  }
+  if (value === 0) {
+    return undefined;
+  }
+  return value;
+}
+
 function gradeFromCarbon(valueGrams: number, thresholds: ImpactScoreThresholds): ImpactScoreResult['grade'] {
   if (valueGrams < thresholds.A) {
     return 'A';
@@ -238,7 +251,7 @@ function computeScore(carbonGrams: number, thresholds: ImpactScoreThresholds): I
 }
 
 function buildBreakdown(resources: ClassifiedResource[], totalCarbonGrams: number): ImpactCategoryBreakdownItem[] {
-  const buckets = new Map<ImpactCategory, { carbonGrams: number; topAsset?: string }>();
+  const buckets = new Map<ImpactCategory, { carbonGrams: number; topAsset?: string; topAssetBytes?: number }>();
 
   for (const category of CATEGORY_ORDER) {
     buckets.set(category, { carbonGrams: 0 });
@@ -253,6 +266,7 @@ function buildBreakdown(resources: ClassifiedResource[], totalCarbonGrams: numbe
     bucket.carbonGrams += resource.carbonGrams;
     if (!bucket.topAsset || resource.carbonGrams > 0) {
       bucket.topAsset = resource.url;
+      bucket.topAssetBytes = resource.networkBytes;
     }
   }
 
@@ -268,6 +282,7 @@ function buildBreakdown(resources: ClassifiedResource[], totalCarbonGrams: numbe
       carbonGrams: bucket.carbonGrams,
       percentage: toPercent(bucket.carbonGrams, totalCarbonGrams),
       topAssetUrl: bucket.topAsset,
+      topAssetBytes: bucket.topAssetBytes,
     });
   }
 
@@ -295,9 +310,9 @@ function buildFindings(
   breakdown: ImpactCategoryBreakdownItem[],
   representativeCarbonGrams: number,
   budgets?: ImpactBudgets,
-  findingsLimit = 5,
+  findingsLimit?: number,
 ): KeyFinding[] {
-  const topCategories = breakdown.filter((item) => item.carbonGrams > 0).slice(0, 5);
+  const topCategories = breakdown.filter((item) => item.carbonGrams > 0);
   const maxSaving = Math.max(...topCategories.map((item) => item.carbonGrams * CATEGORY_SAVINGS_FACTOR[item.category]), 0);
 
   const findings = topCategories.map((item, index) => {
@@ -318,6 +333,7 @@ function buildFindings(
       title: CATEGORY_TITLE[item.category],
       category: item.category,
       assetUrl: item.topAssetUrl,
+      transferBytes: item.topAssetBytes,
       carbonGrams: item.carbonGrams,
       recommendation: CATEGORY_RECOMMENDATION[item.category],
       estimatedSavingGrams,
@@ -327,7 +343,8 @@ function buildFindings(
     } as KeyFinding;
   });
 
-  return findings.sort((a, b) => b.priorityScore - a.priorityScore).slice(0, findingsLimit);
+  const sorted = findings.sort((a, b) => b.priorityScore - a.priorityScore);
+  return findingsLimit === undefined ? sorted : sorted.slice(0, findingsLimit);
 }
 
 function buildSavingsSummary(findings: KeyFinding[], representativeCarbonGrams: number): { items: SavingsItem[]; totalEstimatedSavingGrams: number; totalEstimatedSavingPercent: number } {
@@ -535,7 +552,10 @@ export function buildGithubComment(defaultView: DeveloperReport, maxLines?: numb
 
   const contributorLines = defaultView.findings
     .slice(0, 3)
-    .map((finding, index) => `${index + 1}. ${finding.assetUrl ?? CATEGORY_LABELS[finding.category]} (${(finding.carbonGrams ?? 0).toFixed(2)} g CO2)`);
+    .map((finding, index) => {
+      const sizeLabel = finding.transferBytes !== undefined ? `, ${formatBytesToMb(finding.transferBytes)}` : '';
+      return `${index + 1}. ${finding.assetUrl ?? CATEGORY_LABELS[finding.category]} (${(finding.carbonGrams ?? 0).toFixed(2)} g CO2${sizeLabel})`;
+    });
 
   const actionLines = defaultView.findings
     .slice(0, 3)
@@ -572,10 +592,7 @@ export function buildReportingOutput(report: ImpactTraceReport, options: Reporti
     category: classifyResource(resource, firstPartyHost),
   }));
 
-  const findingsLimit =
-    options.settings?.findingsLimit && Number.isInteger(options.settings.findingsLimit)
-      ? Math.max(1, Math.min(options.settings.findingsLimit, 10))
-      : 5;
+  const findingsLimit = resolveFindingsLimit(options.settings?.findingsLimit);
 
   const breakdown = buildBreakdown(classifiedResources, representative.carbonGrams);
   const findings = buildFindings(breakdown, representative.carbonGrams, options.budgets, findingsLimit);

@@ -325,6 +325,7 @@ export interface ImpactCategoryBreakdownItem {
   carbonGrams: number;
   percentage: number;
   topAssetUrl?: string;
+  topAssetBytes?: number;
 }
 
 export type RecommendationEffort = 'low' | 'medium' | 'high';

@@ -803,7 +803,7 @@ function parseOutputSettingsFromFile(raw?: ImpactTraceConfigFile['reporting'] ex
 
   const settings: ReportingOutputSettings = {
     defaultFormat: parseOutputFormat(raw.defaultFormat),
-    findingsLimit: parsePositiveInteger(raw.findingsLimit),
+    findingsLimit: parseFindingsLimit(raw.findingsLimit),
     githubCommentMaxLines: parsePositiveInteger(raw.githubCommentMaxLines),
   };
 
@@ -813,7 +813,7 @@ function parseOutputSettingsFromFile(raw?: ImpactTraceConfigFile['reporting'] ex
 function parseOutputSettingsFromEnv(): ReportingOutputSettings | undefined {
   const settings: ReportingOutputSettings = {
     defaultFormat: parseOutputFormat(process.env.IMPACT_TRACE_REPORT_FORMAT),
-    findingsLimit: parsePositiveInteger(process.env.IMPACT_TRACE_FINDINGS_LIMIT),
+    findingsLimit: parseFindingsLimit(process.env.IMPACT_TRACE_FINDINGS_LIMIT),
     githubCommentMaxLines: parsePositiveInteger(process.env.IMPACT_TRACE_GITHUB_COMMENT_MAX_LINES),
   };
 
@@ -841,6 +841,27 @@ function parsePositiveInteger(value: unknown): number | undefined {
   if (typeof value === 'string') {
     const parsed = Number.parseInt(value, 10);
     if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+// findingsLimit accepts a positive count, 0, or 'all'/'unlimited'/'none' as a sentinel for "no limit".
+function parseFindingsLimit(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'all' || normalized === 'unlimited' || normalized === 'none') {
+      return 0;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isInteger(parsed) && parsed >= 0) {
       return parsed;
     }
   }

@@ -108,10 +108,15 @@ Notes:
   - Third-party transfer budget in MB.
 - `--score-thresholds <A,B,C,D,E>`
   - Overrides Impact Score thresholds in grams.
+- `--findings-limit <n|all>`
+  - Overrides how many Key Findings are returned/rendered.
+  - Accepts a positive integer, or `0`/`all`/`unlimited`/`none` to return every finding.
+  - Can be set by config/env defaults when not provided (`reporting.output.findingsLimit` / `IMPACT_TRACE_FINDINGS_LIMIT`).
 
 Reporting output defaults can also be set in config/env:
 
 - `reporting.output.findingsLimit` / `IMPACT_TRACE_FINDINGS_LIMIT`
+  - Accepts a positive integer, or `0`/`all`/`unlimited`/`none` for no limit. Defaults to `5`.
 - `reporting.output.githubCommentMaxLines` / `IMPACT_TRACE_GITHUB_COMMENT_MAX_LINES`
 
 ## Examples
