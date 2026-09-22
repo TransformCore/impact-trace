@@ -81,7 +81,31 @@ export interface ResolvedGridIntensity {
 
 export type AverageMode = 'mean' | 'median' | 'trimmed-mean';
 export type CpuMeasurementMode = 'thread-time' | 'process-info';
-export type CpuCurveProfileId = 'if-default' | 'linear';
+export type CpuCurveProfileId = 'realistic' | 'conservative' | 'aggressive' | 'linear' | 'if-default';
+export type CpuDeviceProfileId = 'desktop' | 'laptop' | 'tablet' | 'mobile';
+export type DeviceMixProfileId = 'enterprise' | 'consumer' | 'mobile-first' | 'desktop-first' | 'custom';
+
+export interface CpuDeviceProfileFactors {
+  desktop: number;
+  laptop: number;
+  tablet: number;
+  mobile: number;
+}
+
+export interface CpuDeviceUsageWeights {
+  desktop: number;
+  laptop: number;
+  tablet: number;
+  mobile: number;
+}
+
+export type CpuToDeviceFactorSource =
+  | 'scalar-explicit'
+  | 'scalar-config'
+  | 'profile-blend-default'
+  | 'profile-blend-explicit';
+
+export type DeviceMixProfileSource = 'default' | 'explicit';
 
 export type ModelInputSource = 'default' | 'explicit' | 'derived';
 
@@ -227,6 +251,7 @@ export interface ImpactTraceReport {
   modelInputs?: {
     cpuMeasurementMode?: CpuMeasurementMode;
     cpuCurveProfile?: CpuCurveProfileId;
+    cpuCurveProfileCanonical?: Exclude<CpuCurveProfileId, 'if-default'>;
     cpuCurveSource?: ModelInputSource;
     cpuCurvePoints?: {
       x: number[];
@@ -236,6 +261,12 @@ export interface ImpactTraceReport {
     cpuUtilizationPercent?: number;
     cpuMeasurementWindowMs?: number;
     cpuToDeviceEnergyFactor?: number;
+    cpuToDeviceEnergyFactorBlended?: number;
+    cpuToDeviceFactorSource?: CpuToDeviceFactorSource;
+    deviceMixProfile?: DeviceMixProfileId;
+    deviceMixProfileSource?: DeviceMixProfileSource;
+    cpuToDeviceProfileFactors?: CpuDeviceProfileFactors;
+    cpuToDeviceUsageWeights?: CpuDeviceUsageWeights;
     cpuActiveCores?: number;
     resolvedGridIntensity?: ResolvedGridIntensity;
     userDeviceOperationalSource?: 'co2-transfer' | 'cpu-profiler';
@@ -268,4 +299,140 @@ export interface UrlBreakdown {
   suggestions: DeveloperSuggestion[];
   modelInputs?: ImpactTraceReport['modelInputs'];
   comparison?: ComparisonReport;
+}
+
+export type ImpactScoreGrade = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+
+export interface ImpactScoreThresholds {
+  A: number;
+  B: number;
+  C: number;
+  D: number;
+  E: number;
+}
+
+export interface ImpactScoreResult {
+  grade: ImpactScoreGrade;
+  valueGrams: number;
+  reason: string;
+  thresholds: ImpactScoreThresholds;
+}
+
+export type ImpactCategory = 'video' | 'images' | 'javascript' | 'fonts' | 'thirdParty' | 'other';
+
+export interface ImpactCategoryBreakdownItem {
+  category: ImpactCategory;
+  carbonGrams: number;
+  percentage: number;
+  topAssetUrl?: string;
+}
+
+export type RecommendationEffort = 'low' | 'medium' | 'high';
+
+export interface KeyFinding {
+  id: string;
+  title: string;
+  category: ImpactCategory;
+  assetUrl?: string;
+  transferBytes?: number;
+  carbonGrams?: number;
+  recommendation: string;
+  estimatedSavingGrams: number;
+  priorityScore: number;
+  confidence: number;
+  effort: RecommendationEffort;
+}
+
+export interface SavingsItem {
+  label: string;
+  estimatedSavingGrams: number;
+}
+
+export interface SavingsSummary {
+  items: SavingsItem[];
+  totalEstimatedSavingGrams: number;
+  totalEstimatedSavingPercent: number;
+}
+
+export interface CacheAssessment {
+  firstVisitCarbonGrams: number;
+  returningVisitCarbonGrams: number;
+  reductionPercent: number;
+  assessment: 'good' | 'moderate' | 'poor';
+  message: string;
+}
+
+export interface ImpactBudgets {
+  carbonGrams?: number;
+  transferBytes?: number;
+  cpuSeconds?: number;
+  thirdPartyBytes?: number;
+}
+
+export type BudgetMetric = 'carbon' | 'transfer' | 'cpu' | 'thirdParty';
+export type BudgetStatus = 'pass' | 'fail' | 'not-configured';
+
+export interface BudgetResult {
+  metric: BudgetMetric;
+  actual: number;
+  budget?: number;
+  unit: 'g' | 'bytes' | 'seconds';
+  status: BudgetStatus;
+  delta?: number;
+  deltaPercent?: number | null;
+}
+
+export interface CiSummary {
+  carbonDeltaGrams?: number;
+  carbonDeltaPercent?: number | null;
+  transferDeltaBytes?: number;
+  transferDeltaPercent?: number | null;
+  largestContributor?: string;
+  result: 'pass' | 'fail';
+  summaryLine: string;
+}
+
+export interface DeveloperReportRepresentativeVisit {
+  carbonGrams: number;
+  transferBytes: number;
+  cpuSeconds: number;
+}
+
+export interface DeveloperReport {
+  score: ImpactScoreResult;
+  representativeVisit: DeveloperReportRepresentativeVisit;
+  status: string[];
+  breakdown: ImpactCategoryBreakdownItem[];
+  findings: KeyFinding[];
+  savings: SavingsSummary;
+  cache?: CacheAssessment;
+  budgets: BudgetResult[];
+  ciSummary?: CiSummary;
+}
+
+export interface DeveloperVerboseReport extends DeveloperReport {
+  modelInternals: {
+    swdm: SwdmReportBreakdown;
+    cpu: CpuDetails;
+    assumptions: NonNullable<ImpactTraceReport['modelInputs']>;
+    sources: ReportSources;
+  };
+}
+
+export interface ImpactTraceOutput {
+  formatVersion: '2.0';
+  generatedAt: string;
+  raw: ImpactTraceReport;
+  defaultView: DeveloperReport;
+  ci: CiSummary;
+  githubComment: string;
+  verboseView?: DeveloperVerboseReport;
+}
+
+export type ReportingOutputFormat = 'console' | 'json' | 'github-pr';
+
+export interface ReportingOutputSettings {
+  defaultFormat?: ReportingOutputFormat;
+  findingsLimit?: number;
+  githubCommentMaxLines?: number;
 }

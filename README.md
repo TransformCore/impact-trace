@@ -50,6 +50,12 @@ npx impact-trace run --url https://example.com
 npx impact-trace run --url https://example.com
 ```
 
+URL mode waits for `networkidle` by default. To override:
+
+```bash
+npx impact-trace run --url https://example.com --wait-until load
+```
+
 ### 2) Run against multiple URLs
 
 ```bash
@@ -77,14 +83,15 @@ ImpactTrace outputs:
 
 Console report includes:
 
-- Total carbon (g CO2)
-- Total energy (kWh)
-- CPU time (s)
-- CPU carbon and energy totals
-- Total network transfer (MB)
-- Transfer split by segment (device, network, data centre) for carbon and energy
-- Top contributors (asset path, size, estimated CO2)
-- Actionable suggestions
+- Executive summary with Impact Score (A-F)
+- Impact breakdown by category (video, images, JavaScript, fonts, third-party, other)
+- Key findings prioritized by estimated reduction potential
+- Potential savings summary
+- Cache effectiveness summary (new vs returning visit)
+- Budget pass/fail table
+- CI summary suitable for pull request comments
+
+Use `--verbose` to append model internals (SWDM matrix, assumptions, and model inputs).
 
 In multi-URL mode, ImpactTrace also prints per-URL breakdowns and aggregate totals.
 
@@ -105,6 +112,44 @@ ImpactTrace resolves CPU measurement window with this precedence:
 
 CPU is measured from journey start through at least the configured window, so short journeys still capture post-load activity such as animations.
 
+ImpactTrace resolves CPU->Device factor with this precedence:
+
+1. CLI `--cpu-to-device-factor`
+2. Environment variable `IMPACT_TRACE_CPU_TO_DEVICE_ENERGY_FACTOR`
+3. Repo config file `impact-trace.config.json` (`cpuToDeviceEnergyFactor`)
+4. Blended profile factor from `cpuToDeviceEnergyProfileFactors` and `cpuToDeviceUsageWeights`
+
+Default profile factors:
+
+- `desktop=2.4`
+- `laptop=1.8`
+- `tablet=1.5`
+- `mobile=1.3`
+
+Default usage weights:
+
+- `desktop=0.35`
+- `laptop=0.35`
+- `tablet=0.10`
+- `mobile=0.20`
+
+Default blended factor from these values is `1.88`.
+
+You can override profile factors and weights with env vars:
+
+- `IMPACT_TRACE_CPU_TO_DEVICE_PROFILE_FACTORS` (`desktop:2.4,laptop:1.8,tablet:1.5,mobile:1.3`)
+- `IMPACT_TRACE_CPU_TO_DEVICE_USAGE_WEIGHTS` (`desktop:0.35,laptop:0.35,tablet:0.1,mobile:0.2`)
+
+Or with CLI flags:
+
+```bash
+npx impact-trace run --url https://example.com \
+  --cpu-device-profile-factors desktop:2.4,laptop:1.8,tablet:1.5,mobile:1.3 \
+  --cpu-device-weights desktop:0.35,laptop:0.35,tablet:0.1,mobile:0.2
+```
+
+Weights must sum to `1`.
+
 To disable CPU measurement entirely and use network transfer/asset size only:
 
 ```bash
@@ -115,12 +160,16 @@ Network transfer carbon is estimated via `@tgwf/co2` `perByteTrace()` segmented 
 
 JSON output includes:
 
+- Envelope fields: `formatVersion`, `generatedAt`, `raw`, `defaultView`, `ci`, `githubComment`
+- Optional `verboseView` when `--verbose` is enabled
+
 - Resolved grid-intensity metadata at `modelInputs.resolvedGridIntensity`
 - User-device operational source metadata at `modelInputs.userDeviceOperationalSource`
 - SWDM segment/category totals at `swdmSegments` (dataCenters/networks/userDevices, each with operational and embodied carbon + energy)
 - In compare mode, SWDM totals are present in `comparison.firstVisit.swdmSegments`, `comparison.returningVisit.swdmSegments`, and `comparison.delta.swdmSegments`
 - Backward-compatible transfer totals remain at `transferSegments`
 - Green hosting / visitor/cache model inputs at `modelInputs.*` (including source metadata)
+- CPU device factor blend metadata at `modelInputs.cpuToDevice*`
 - In compare mode, audience-weighted totals at `comparison.representativeVisit`
 
 Visitor/cache and hosting factors can be configured with this precedence:
@@ -153,6 +202,18 @@ Example:
 {
   "cpuWatts": 20,
   "cpuMeasurementSeconds": 3,
+  "cpuToDeviceEnergyProfileFactors": {
+    "desktop": 2.4,
+    "laptop": 1.8,
+    "tablet": 1.5,
+    "mobile": 1.3
+  },
+  "cpuToDeviceUsageWeights": {
+    "desktop": 0.35,
+    "laptop": 0.35,
+    "tablet": 0.1,
+    "mobile": 0.2
+  },
   "greenHostingFactor": 0.3,
   "returnVisitorRatio": 0.75,
   "dataCacheRatio": 0.8,
@@ -160,9 +221,35 @@ Example:
     "device": 565.629,
     "dataCenter": { "country": "TWN" },
     "network": 442
+  },
+  "reporting": {
+    "budgets": {
+      "carbonGrams": 2,
+      "transferMb": 10,
+      "cpuSeconds": 1,
+      "thirdPartyMb": 1
+    },
+    "scoreThresholds": {
+      "A": 0.5,
+      "B": 1,
+      "C": 2,
+      "D": 5,
+      "E": 10
+    },
+    "output": {
+      "defaultFormat": "console",
+      "findingsLimit": 3,
+      "githubCommentMaxLines": 40
+    }
   }
 }
 ```
+
+Reporting output settings can also be configured via environment variables:
+
+- `IMPACT_TRACE_REPORT_FORMAT` (`console|json|github-pr`)
+- `IMPACT_TRACE_FINDINGS_LIMIT`
+- `IMPACT_TRACE_GITHUB_COMMENT_MAX_LINES`
 
 ## Configuration and CLI Options
 

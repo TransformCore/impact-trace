@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://impacttrace.dev/schema/report-2.0.json",
+  "title": "ImpactTrace Report Output",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "generatedAt",
+    "raw",
+    "defaultView",
+    "ci",
+    "githubComment"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": "2.0"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "raw": {
+      "type": "object",
+      "description": "Original ImpactTrace raw report payload"
+    },
+    "defaultView": {
+      "type": "object",
+      "required": [
+        "score",
+        "representativeVisit",
+        "status",
+        "breakdown",
+        "findings",
+        "savings",
+        "budgets"
+      ],
+      "properties": {
+        "score": {
+          "type": "object",
+          "required": ["grade", "valueGrams", "reason", "thresholds"],
+          "properties": {
+            "grade": {
+              "type": "string",
+              "enum": ["A", "B", "C", "D", "E", "F"]
+            },
+            "valueGrams": { "type": "number" },
+            "reason": { "type": "string" },
+            "thresholds": {
+              "type": "object",
+              "required": ["A", "B", "C", "D", "E"],
+              "properties": {
+                "A": { "type": "number" },
+                "B": { "type": "number" },
+                "C": { "type": "number" },
+                "D": { "type": "number" },
+                "E": { "type": "number" }
+              }
+            }
+          }
+        },
+        "representativeVisit": {
+          "type": "object",
+          "required": ["carbonGrams", "transferBytes", "cpuSeconds"],
+          "properties": {
+            "carbonGrams": { "type": "number" },
+            "transferBytes": { "type": "number" },
+            "cpuSeconds": { "type": "number" }
+          }
+        },
+        "status": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "breakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["category", "carbonGrams", "percentage"],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": ["video", "images", "javascript", "fonts", "thirdParty", "other"]
+              },
+              "carbonGrams": { "type": "number" },
+              "percentage": { "type": "number" },
+              "topAssetUrl": { "type": "string" }
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "category",
+              "recommendation",
+              "estimatedSavingGrams",
+              "priorityScore",
+              "confidence",
+              "effort"
+            ],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "category": {
+                "type": "string",
+                "enum": ["video", "images", "javascript", "fonts", "thirdParty", "other"]
+              },
+              "assetUrl": { "type": "string" },
+              "transferBytes": { "type": "number" },
+              "carbonGrams": { "type": "number" },
+              "recommendation": { "type": "string" },
+              "estimatedSavingGrams": { "type": "number" },
+              "priorityScore": { "type": "number" },
+              "confidence": { "type": "number" },
+              "effort": { "type": "string", "enum": ["low", "medium", "high"] }
+            }
+          }
+        },
+        "savings": {
+          "type": "object",
+          "required": ["items", "totalEstimatedSavingGrams", "totalEstimatedSavingPercent"],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["label", "estimatedSavingGrams"],
+                "properties": {
+                  "label": { "type": "string" },
+                  "estimatedSavingGrams": { "type": "number" }
+                }
+              }
+            },
+            "totalEstimatedSavingGrams": { "type": "number" },
+            "totalEstimatedSavingPercent": { "type": "number" }
+          }
+        },
+        "cache": {
+          "type": "object",
+          "required": [
+            "firstVisitCarbonGrams",
+            "returningVisitCarbonGrams",
+            "reductionPercent",
+            "assessment",
+            "message"
+          ],
+          "properties": {
+            "firstVisitCarbonGrams": { "type": "number" },
+            "returningVisitCarbonGrams": { "type": "number" },
+            "reductionPercent": { "type": "number" },
+            "assessment": { "type": "string", "enum": ["good", "moderate", "poor"] },
+            "message": { "type": "string" }
+          }
+        },
+        "budgets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["metric", "actual", "unit", "status"],
+            "properties": {
+              "metric": { "type": "string", "enum": ["carbon", "transfer", "cpu", "thirdParty"] },
+              "actual": { "type": "number" },
+              "budget": { "type": "number" },
+              "unit": { "type": "string", "enum": ["g", "bytes", "seconds"] },
+              "status": { "type": "string", "enum": ["pass", "fail", "not-configured"] },
+              "delta": { "type": "number" },
+              "deltaPercent": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "ciSummary": {
+          "type": "object",
+          "required": ["result", "summaryLine"],
+          "properties": {
+            "carbonDeltaGrams": { "type": "number" },
+            "carbonDeltaPercent": { "type": ["number", "null"] },
+            "transferDeltaBytes": { "type": "number" },
+            "transferDeltaPercent": { "type": ["number", "null"] },
+            "largestContributor": { "type": "string" },
+            "result": { "type": "string", "enum": ["pass", "fail"] },
+            "summaryLine": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ci": {
+      "type": "object"
+    },
+    "githubComment": {
+      "type": "string"
+    },
+    "verboseView": {
+      "type": "object",
+      "description": "Verbose view with model internals; present when --verbose is enabled"
+    }
+  }
+}

@@ -13,8 +13,20 @@ import { co2 as Co2Model } from '@tgwf/co2';
 
 export const CARBON_INTENSITY = 300;
 export const DEFAULT_CPU_WATTS = 20;
-export const DEFAULT_CPU_CURVE_PROFILE: CpuCurveProfileId = 'if-default';
+export const DEFAULT_CPU_CURVE_PROFILE: CpuCurveProfileId = 'realistic';
 export const DEFAULT_CPU_CURVE_POINTS: Record<CpuCurveProfileId, { x: number[]; y: number[] }> = {
+  realistic: {
+    x: [0, 10, 50, 100],
+    y: [0.12, 0.32, 0.75, 1.02],
+  },
+  conservative: {
+    x: [0, 10, 50, 100],
+    y: [0.1, 0.24, 0.58, 0.88],
+  },
+  aggressive: {
+    x: [0, 10, 50, 100],
+    y: [0.16, 0.4, 0.9, 1.12],
+  },
   'if-default': {
     x: [0, 10, 50, 100],
     y: [0.12, 0.32, 0.75, 1.02],

@@ -3,12 +3,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { BrowserPlugin } from '../plugins/browserPlugin.js';
 import { runJourneyWithPlugins } from '../core/runner.js';
+import type { UrlWaitUntil } from '../core/runner.js';
 import { aggregateReportsForRepeats, normalizeTrimPercent } from '../core/statistics.js';
+import { resolveReportingConfig } from '../core/config.js';
+import { buildReportingOutput } from '../reporting/developerReport.js';
 import type {
   AverageMode,
+  BudgetResult,
   ComparisonReport,
+  DeviceMixProfileId,
+  CpuDeviceProfileFactors,
+  CpuDeviceUsageWeights,
   CpuCurveProfileId,
   CpuMeasurementMode,
+  ImpactBudgets,
+  ImpactCategory,
+  ImpactScoreThresholds,
+  ImpactTraceOutput,
+  ReportingOutputSettings,
   GridIntensityConfig,
   GridIntensitySegment,
   ImpactTraceReport,
@@ -22,12 +34,17 @@ interface CliArgs {
   command?: string;
   journeyScript?: string;
   urls: string[];
+  urlWaitUntil?: UrlWaitUntil;
   outputPath: string;
   compareCache: boolean;
   clearCacheBeforeFirstRun: boolean;
   cpuMeasurementSeconds?: number;
   cpuMode?: CpuMeasurementMode;
   cpuCurveProfile?: CpuCurveProfileId;
+  cpuDeviceMixProfile?: DeviceMixProfileId;
+  cpuToDeviceEnergyFactor?: number;
+  cpuToDeviceEnergyProfileFactors?: CpuDeviceProfileFactors;
+  cpuToDeviceUsageWeights?: CpuDeviceUsageWeights;
   disableCpuMeasurement: boolean;
   gridIntensity?: GridIntensityConfig;
   greenHostingFactor?: number;
@@ -37,6 +54,12 @@ interface CliArgs {
   warmup?: number;
   average?: AverageMode;
   trimPercent?: number;
+  verbose: boolean;
+  format: 'console' | 'json' | 'github-pr';
+  formatExplicitlySet: boolean;
+  baselinePath?: string;
+  budgets?: ImpactBudgets;
+  scoreThresholds?: Partial<ImpactScoreThresholds>;
   parseError?: string;
 }
 
@@ -99,12 +122,17 @@ async function main(): Promise<void> {
         async () =>
           runJourneyWithPlugins({
             journeyScript: args.journeyScript,
+            urlWaitUntil: args.urlWaitUntil,
             plugins: [new BrowserPlugin()],
             compareCache: args.compareCache,
             clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
             cpuMeasurementSeconds: args.cpuMeasurementSeconds,
             cpuMode: args.cpuMode,
             cpuCurveProfile: args.cpuCurveProfile,
+            cpuDeviceMixProfile: args.cpuDeviceMixProfile,
+            cpuToDeviceEnergyFactor: args.cpuToDeviceEnergyFactor,
+            cpuToDeviceEnergyProfileFactors: args.cpuToDeviceEnergyProfileFactors,
+            cpuToDeviceUsageWeights: args.cpuToDeviceUsageWeights,
             disableCpuMeasurement: args.disableCpuMeasurement,
             gridIntensity: args.gridIntensity,
             greenHostingFactor: args.greenHostingFactor,
@@ -113,10 +141,42 @@ async function main(): Promise<void> {
           }),
       );
 
-  printReport(report);
+  const reportingConfig = await resolveReportingConfig({ workingDirectory: process.cwd() });
+  const mergedBudgets = {
+    ...(reportingConfig.budgets ?? {}),
+    ...(args.budgets ?? {}),
+  };
+  const mergedScoreThresholds = {
+    ...(reportingConfig.scoreThresholds ?? {}),
+    ...(args.scoreThresholds ?? {}),
+  };
+  const mergedOutputSettings: ReportingOutputSettings = {
+    ...(reportingConfig.output ?? {}),
+  };
+
+  if (args.formatExplicitlySet) {
+    mergedOutputSettings.defaultFormat = args.format;
+  }
+
+  const resolvedFormat = mergedOutputSettings.defaultFormat ?? args.format;
+
+  const baselineReport = await loadBaselineReport(args.baselinePath);
+  const output = buildReportingOutput(report, {
+    verbose: args.verbose,
+    url: args.urls[0],
+    budgets: Object.keys(mergedBudgets).length > 0 ? mergedBudgets : undefined,
+    thresholds: Object.keys(mergedScoreThresholds).length > 0 ? mergedScoreThresholds : undefined,
+    baseline: baselineReport,
+    settings: mergedOutputSettings,
+  });
+
+  printOutput(output, {
+    ...args,
+    format: resolvedFormat,
+  });
 
   const outputPath = path.resolve(process.cwd(), args.outputPath);
-  await fs.writeFile(outputPath, JSON.stringify(report, null, 2), 'utf-8');
+  await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
 
   console.log(`\nJSON report written to ${outputPath}`);
 }
@@ -128,11 +188,16 @@ function parseArgs(argv: string[]): CliArgs {
 
   let outputPath = 'impact-trace-report.json';
   const urls: string[] = [];
+  let urlWaitUntil: UrlWaitUntil | undefined;
   let compareCache = false;
   let clearCacheBeforeFirstRun = true;
   let cpuMeasurementSeconds: number | undefined;
   let cpuMode: CpuMeasurementMode | undefined;
   let cpuCurveProfile: CpuCurveProfileId | undefined;
+  let cpuDeviceMixProfile: DeviceMixProfileId | undefined;
+  let cpuToDeviceEnergyFactor: number | undefined;
+  let cpuToDeviceEnergyProfileFactors: CpuDeviceProfileFactors | undefined;
+  let cpuToDeviceUsageWeights: CpuDeviceUsageWeights | undefined;
   let disableCpuMeasurement = false;
   let gridIntensity: GridIntensityConfig | undefined;
   let greenHostingFactor: number | undefined;
@@ -142,6 +207,12 @@ function parseArgs(argv: string[]): CliArgs {
   let warmup: number | undefined;
   let average: AverageMode | undefined;
   let trimPercent: number | undefined;
+  let verbose = false;
+  let format: CliArgs['format'] = 'console';
+  let formatExplicitlySet = false;
+  let baselinePath: string | undefined;
+  let budgets: ImpactBudgets | undefined;
+  let scoreThresholds: Partial<ImpactScoreThresholds> | undefined;
   let parseError: string | undefined;
 
   for (let i = 1; i < argv.length; i += 1) {
@@ -157,8 +228,129 @@ function parseArgs(argv: string[]): CliArgs {
       continue;
     }
 
+    if (argv[i] === '--wait-until') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --wait-until. Use load, domcontentloaded, or networkidle.';
+        continue;
+      }
+
+      const parsedUrlWaitUntil = parseUrlWaitUntil(rawValue);
+      if (!parsedUrlWaitUntil) {
+        parseError = 'Invalid value for --wait-until. Use load, domcontentloaded, or networkidle.';
+        continue;
+      }
+
+      urlWaitUntil = parsedUrlWaitUntil;
+      i += 1;
+      continue;
+    }
+
     if (argv[i] === '--compare-cache') {
       compareCache = true;
+      continue;
+    }
+
+    if (argv[i] === '--verbose') {
+      verbose = true;
+      continue;
+    }
+
+    if (argv[i] === '--format') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --format. Use console, json, or github-pr.';
+        continue;
+      }
+
+      if (rawValue === 'console' || rawValue === 'json' || rawValue === 'github-pr') {
+        format = rawValue;
+        formatExplicitlySet = true;
+      } else {
+        parseError = 'Invalid value for --format. Use console, json, or github-pr.';
+      }
+
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--baseline' && argv[i + 1]) {
+      baselinePath = argv[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--budget-carbon' && argv[i + 1]) {
+      const parsed = Number.parseFloat(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        budgets = {
+          ...(budgets ?? {}),
+          carbonGrams: parsed,
+        };
+      } else {
+        parseError = 'Invalid value for --budget-carbon. Use a positive number in grams.';
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--budget-transfer-mb' && argv[i + 1]) {
+      const parsed = Number.parseFloat(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        budgets = {
+          ...(budgets ?? {}),
+          transferBytes: parsed * 1024 * 1024,
+        };
+      } else {
+        parseError = 'Invalid value for --budget-transfer-mb. Use a positive number.';
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--budget-cpu-seconds' && argv[i + 1]) {
+      const parsed = Number.parseFloat(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        budgets = {
+          ...(budgets ?? {}),
+          cpuSeconds: parsed,
+        };
+      } else {
+        parseError = 'Invalid value for --budget-cpu-seconds. Use a positive number.';
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--budget-third-party-mb' && argv[i + 1]) {
+      const parsed = Number.parseFloat(argv[i + 1]);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        budgets = {
+          ...(budgets ?? {}),
+          thirdPartyBytes: parsed * 1024 * 1024,
+        };
+      } else {
+        parseError = 'Invalid value for --budget-third-party-mb. Use a positive number.';
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--score-thresholds' && argv[i + 1]) {
+      const raw = argv[i + 1];
+      const values = raw.split(',').map((item) => Number.parseFloat(item.trim()));
+      if (values.length === 5 && values.every((value) => Number.isFinite(value) && value > 0)) {
+        scoreThresholds = {
+          A: values[0],
+          B: values[1],
+          C: values[2],
+          D: values[3],
+          E: values[4],
+        };
+      } else {
+        parseError = 'Invalid value for --score-thresholds. Use five comma-separated positive numbers.';
+      }
+      i += 1;
       continue;
     }
 
@@ -189,17 +381,86 @@ function parseArgs(argv: string[]): CliArgs {
     if (argv[i] === '--cpu-curve-profile') {
       const rawValue = argv[i + 1];
       if (!rawValue) {
-        parseError = 'Missing value for --cpu-curve-profile. Use if-default or linear.';
+        parseError = 'Missing value for --cpu-curve-profile. Use realistic, conservative, aggressive, linear, or if-default.';
         continue;
       }
 
       const parsedCpuCurveProfile = parseCpuCurveProfile(rawValue);
       if (!parsedCpuCurveProfile) {
-        parseError = 'Invalid value for --cpu-curve-profile. Use if-default or linear.';
+        parseError = 'Invalid value for --cpu-curve-profile. Use realistic, conservative, aggressive, linear, or if-default.';
         continue;
       }
 
       cpuCurveProfile = parsedCpuCurveProfile;
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-device-mix') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-device-mix. Use enterprise, consumer, mobile-first, desktop-first, or custom.';
+        continue;
+      }
+
+      const parsedCpuDeviceMixProfile = parseDeviceMixProfile(rawValue);
+      if (!parsedCpuDeviceMixProfile) {
+        parseError = 'Invalid value for --cpu-device-mix. Use enterprise, consumer, mobile-first, desktop-first, or custom.';
+        continue;
+      }
+
+      cpuDeviceMixProfile = parsedCpuDeviceMixProfile;
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-to-device-factor') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-to-device-factor. Use a positive number.';
+        continue;
+      }
+
+      const parsed = Number.parseFloat(rawValue);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        cpuToDeviceEnergyFactor = parsed;
+      } else {
+        parseError = 'Invalid value for --cpu-to-device-factor. Use a positive number.';
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-device-profile-factors') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-device-profile-factors. Use desktop:<n>,laptop:<n>,tablet:<n>,mobile:<n>.';
+        continue;
+      }
+
+      const parsed = parseCpuDeviceProfileFactorsArg(rawValue);
+      if (!parsed) {
+        parseError = 'Invalid value for --cpu-device-profile-factors. Use desktop:<n>,laptop:<n>,tablet:<n>,mobile:<n> with positive numbers.';
+      } else {
+        cpuToDeviceEnergyProfileFactors = parsed;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (argv[i] === '--cpu-device-weights') {
+      const rawValue = argv[i + 1];
+      if (!rawValue) {
+        parseError = 'Missing value for --cpu-device-weights. Use desktop:<n>,laptop:<n>,tablet:<n>,mobile:<n>.';
+        continue;
+      }
+
+      const parsed = parseCpuDeviceUsageWeightsArg(rawValue);
+      if (!parsed) {
+        parseError = 'Invalid value for --cpu-device-weights. Use desktop:<n>,laptop:<n>,tablet:<n>,mobile:<n> with values between 0 and 1.';
+      } else {
+        cpuToDeviceUsageWeights = parsed;
+      }
       i += 1;
       continue;
     }
@@ -344,12 +605,17 @@ function parseArgs(argv: string[]): CliArgs {
     command,
     journeyScript,
     urls,
+    urlWaitUntil,
     outputPath,
     compareCache,
     clearCacheBeforeFirstRun,
     cpuMeasurementSeconds,
     cpuMode,
     cpuCurveProfile,
+    cpuDeviceMixProfile,
+    cpuToDeviceEnergyFactor,
+    cpuToDeviceEnergyProfileFactors,
+    cpuToDeviceUsageWeights,
     disableCpuMeasurement,
     gridIntensity,
     greenHostingFactor,
@@ -359,17 +625,47 @@ function parseArgs(argv: string[]): CliArgs {
     warmup,
     average,
     trimPercent,
+    verbose,
+    format,
+    formatExplicitlySet,
+    baselinePath,
+    budgets,
+    scoreThresholds,
     parseError,
   };
 }
 
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <if-default|linear>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <if-default|linear>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>]');
+  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>]');
+  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--wait-until <load|domcontentloaded|networkidle>] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>]');
+}
+
+function parseUrlWaitUntil(value: string): UrlWaitUntil | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'load' || normalized === 'domcontentloaded' || normalized === 'networkidle') {
+    return normalized;
+  }
+
+  return undefined;
 }
 
 function validateInputArgs(args: CliArgs): string[] {
   const errors: string[] = [];
+
+  if (args.cpuToDeviceEnergyFactor !== undefined && (!Number.isFinite(args.cpuToDeviceEnergyFactor) || args.cpuToDeviceEnergyFactor <= 0)) {
+    errors.push('CPU->Device factor must be a positive number.');
+  }
+
+  if (args.cpuToDeviceUsageWeights) {
+    const sum =
+      args.cpuToDeviceUsageWeights.desktop +
+      args.cpuToDeviceUsageWeights.laptop +
+      args.cpuToDeviceUsageWeights.tablet +
+      args.cpuToDeviceUsageWeights.mobile;
+    if (Math.abs(sum - 1) > 0.001) {
+      errors.push('CPU device weights must sum to 1.');
+    }
+  }
 
   if (args.greenHostingFactor !== undefined && !isRatio(args.greenHostingFactor)) {
     errors.push('Green hosting factor must be a number between 0 and 1.');
@@ -413,6 +709,248 @@ function validateInputArgs(args: CliArgs): string[] {
 
 function isRatio(value: number): boolean {
   return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function parseCpuDeviceProfileFactorsArg(value: string): CpuDeviceProfileFactors | undefined {
+  const parsed = parseCpuDeviceKeyValueMap(value);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const desktop = Number.parseFloat(parsed.desktop);
+  const laptop = Number.parseFloat(parsed.laptop);
+  const tablet = Number.parseFloat(parsed.tablet);
+  const mobile = Number.parseFloat(parsed.mobile);
+
+  if ([desktop, laptop, tablet, mobile].every((item) => Number.isFinite(item) && item > 0)) {
+    return { desktop, laptop, tablet, mobile };
+  }
+
+  return undefined;
+}
+
+function parseCpuDeviceUsageWeightsArg(value: string): CpuDeviceUsageWeights | undefined {
+  const parsed = parseCpuDeviceKeyValueMap(value);
+  if (!parsed) {
+    return undefined;
+  }
+
+  const desktop = Number.parseFloat(parsed.desktop);
+  const laptop = Number.parseFloat(parsed.laptop);
+  const tablet = Number.parseFloat(parsed.tablet);
+  const mobile = Number.parseFloat(parsed.mobile);
+
+  if ([desktop, laptop, tablet, mobile].every((item) => Number.isFinite(item) && item >= 0 && item <= 1)) {
+    return { desktop, laptop, tablet, mobile };
+  }
+
+  return undefined;
+}
+
+function parseCpuDeviceKeyValueMap(value: string): Record<'desktop' | 'laptop' | 'tablet' | 'mobile', string> | undefined {
+  const entries = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .map((item) => item.split(':').map((part) => part.trim()));
+
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  const result: Partial<Record<'desktop' | 'laptop' | 'tablet' | 'mobile', string>> = {};
+  for (const entry of entries) {
+    if (entry.length !== 2) {
+      return undefined;
+    }
+
+    const [rawKey, rawValue] = entry;
+    const key = rawKey.toLowerCase();
+    if ((key !== 'desktop' && key !== 'laptop' && key !== 'tablet' && key !== 'mobile') || !rawValue) {
+      return undefined;
+    }
+
+    result[key] = rawValue;
+  }
+
+  if (!result.desktop || !result.laptop || !result.tablet || !result.mobile) {
+    return undefined;
+  }
+
+  return result as Record<'desktop' | 'laptop' | 'tablet' | 'mobile', string>;
+}
+
+async function loadBaselineReport(baselinePath?: string): Promise<ImpactTraceReport | undefined> {
+  if (!baselinePath) {
+    return undefined;
+  }
+
+  const resolvedPath = path.resolve(process.cwd(), baselinePath);
+  const raw = await fs.readFile(resolvedPath, 'utf-8');
+  const parsed = JSON.parse(raw) as Partial<ImpactTraceOutput> | ImpactTraceReport;
+
+  if ('raw' in parsed && parsed.raw) {
+    return parsed.raw;
+  }
+
+  return parsed as ImpactTraceReport;
+}
+
+function printOutput(output: ImpactTraceOutput, args: CliArgs): void {
+  if (args.format === 'github-pr') {
+    console.log(output.githubComment);
+    return;
+  }
+
+  if (args.format === 'json') {
+    return;
+  }
+
+  printDeveloperConsole(output, args.verbose);
+}
+
+function printDeveloperConsole(output: ImpactTraceOutput, verbose: boolean): void {
+  const report = output.defaultView;
+  const raw = output.raw;
+
+  console.log('ImpactTrace\n');
+  if (raw.urlBreakdown?.[0]?.url) {
+    console.log(`URL: ${raw.urlBreakdown[0].url}`);
+  }
+  console.log(`Impact Score: ${report.score.grade}`);
+  console.log(`Representative Visit: ${report.representativeVisit.carbonGrams.toFixed(2)}g CO2`);
+  console.log(`Transfer Size: ${(report.representativeVisit.transferBytes / (1024 * 1024)).toFixed(2)} MB`);
+  console.log('');
+
+  console.log('Status:');
+  for (const line of report.status) {
+    console.log(`- ${line}`);
+  }
+
+  console.log('\nImpact Breakdown');
+  for (const item of report.breakdown) {
+    if (item.percentage <= 0.01) {
+      continue;
+    }
+
+    const label = categoryLabel(item.category).padEnd(12, ' ');
+    console.log(`${label} ${item.percentage.toFixed(0).padStart(3, ' ')}% ${buildBar(item.percentage)}`);
+  }
+
+  console.log('\nKey Findings');
+  if (report.findings.length === 0) {
+    console.log('1. No high-impact findings detected.');
+  } else {
+    report.findings.slice(0, 3).forEach((finding, index) => {
+      console.log(`${index + 1}. ${finding.title}`);
+      if (finding.assetUrl) {
+        console.log(`   Asset: ${shortenUrl(finding.assetUrl)}`);
+      }
+      if (finding.carbonGrams !== undefined) {
+        console.log(`   Carbon Impact: ${finding.carbonGrams.toFixed(2)}g CO2`);
+      }
+      console.log(`   Recommendation: ${finding.recommendation}`);
+    });
+  }
+
+  console.log('\nPotential Savings');
+  if (report.savings.items.length === 0) {
+    console.log('- No savings opportunities detected.');
+  } else {
+    for (const item of report.savings.items.slice(0, 3)) {
+      console.log(`- ${item.label}: -${item.estimatedSavingGrams.toFixed(2)}g CO2`);
+    }
+    console.log(
+      `Potential total reduction: -${report.savings.totalEstimatedSavingGrams.toFixed(2)}g CO2 (${report.savings.totalEstimatedSavingPercent.toFixed(0)}%)`,
+    );
+  }
+
+  if (report.cache) {
+    console.log('\nCache Effectiveness');
+    console.log(`First Visit: ${report.cache.firstVisitCarbonGrams.toFixed(2)}g CO2`);
+    console.log(`Returning Visit: ${report.cache.returningVisitCarbonGrams.toFixed(2)}g CO2`);
+    console.log(`Reduction: ${report.cache.reductionPercent.toFixed(0)}%`);
+    console.log(`Assessment: ${report.cache.message}`);
+  }
+
+  console.log('\nBudgets');
+  for (const budget of report.budgets) {
+    printBudgetLine(budget);
+  }
+
+  console.log('\nPR Summary');
+  console.log(`Carbon: ${formatCiDelta(report.ciSummary?.carbonDeltaGrams, report.ciSummary?.carbonDeltaPercent, 'g')}`);
+  const transferDeltaMb =
+    report.ciSummary?.transferDeltaBytes === undefined
+      ? undefined
+      : report.ciSummary.transferDeltaBytes / (1024 * 1024);
+  console.log(`Transfer: ${formatCiDelta(transferDeltaMb, report.ciSummary?.transferDeltaPercent, 'MB')}`);
+  console.log(`Largest contributor: ${report.ciSummary?.largestContributor ? shortenUrl(report.ciSummary.largestContributor) : 'n/a'}`);
+  console.log(`Result: ${(report.ciSummary?.result ?? 'pass').toUpperCase()} ${report.ciSummary?.summaryLine ?? ''}`);
+
+  if (verbose && output.verboseView) {
+    printVerboseTail(output.verboseView);
+  }
+}
+
+function printVerboseTail(report: NonNullable<ImpactTraceOutput['verboseView']>): void {
+  console.log('\nVerbose Model Details');
+  printSwdmSegmentsMatrix(report.modelInternals.swdm);
+  printCpuDetails(report.modelInternals.cpu);
+  printModelInputs(report.modelInternals.assumptions);
+}
+
+function categoryLabel(category: ImpactCategory): string {
+  if (category === 'javascript') {
+    return 'JavaScript';
+  }
+  if (category === 'thirdParty') {
+    return 'Third Party';
+  }
+  return category.charAt(0).toUpperCase() + category.slice(1);
+}
+
+function buildBar(percentage: number): string {
+  const blocks = Math.max(1, Math.round(percentage / 4));
+  return `| ${'#'.repeat(blocks)}`;
+}
+
+function formatCiDelta(value: number | undefined, percent: number | null | undefined, unit: string): string {
+  if (value === undefined) {
+    return 'n/a';
+  }
+
+  const prefix = value >= 0 ? '+' : '';
+  const valuePart = `${prefix}${value.toFixed(2)}${unit}`;
+  if (percent === undefined || percent === null) {
+    return valuePart;
+  }
+
+  const percentPrefix = percent >= 0 ? '+' : '';
+  return `${valuePart} (${percentPrefix}${percent.toFixed(1)}%)`;
+}
+
+function printBudgetLine(budget: BudgetResult): void {
+  const statusLabel = budget.status === 'pass' ? 'PASS' : budget.status === 'fail' ? 'FAIL' : 'N/A';
+  const actual = formatBudgetValue(budget.actual, budget.unit);
+  const configured = budget.budget === undefined ? 'n/a' : formatBudgetValue(budget.budget, budget.unit);
+  console.log(`${capitalize(budget.metric)}: ${actual} / ${configured} ${statusLabel}`);
+}
+
+function formatBudgetValue(value: number, unit: BudgetResult['unit']): string {
+  if (unit === 'bytes') {
+    return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  if (unit === 'seconds') {
+    return `${value.toFixed(2)} s`;
+  }
+
+  return `${value.toFixed(2)} g`;
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function printReport(report: ImpactTraceReport): void {
@@ -560,7 +1098,8 @@ function printModelInputs(modelInputs: ImpactTraceReport['modelInputs']): void {
 
   if (modelInputs.cpuCurveProfile !== undefined) {
     const source = modelInputs.cpuCurveSource ?? 'default';
-    lines.push(`CPU Curve Profile: ${modelInputs.cpuCurveProfile} (${source})`);
+    const canonical = modelInputs.cpuCurveProfileCanonical ?? modelInputs.cpuCurveProfile;
+    lines.push(`CPU Curve Profile: ${canonical} (${source})`);
   }
 
   if (modelInputs.cpuUtilizationPercent !== undefined) {
@@ -568,11 +1107,35 @@ function printModelInputs(modelInputs: ImpactTraceReport['modelInputs']): void {
   }
 
   if (modelInputs.cpuPowerFactor !== undefined) {
-    lines.push(`CPU Power Factor: ${modelInputs.cpuPowerFactor.toFixed(3)}`);
+    lines.push(`Relative Device Power Load: ${modelInputs.cpuPowerFactor.toFixed(3)}`);
   }
 
   if (modelInputs.cpuToDeviceEnergyFactor !== undefined) {
-    lines.push(`CPU->Device Energy Factor: ${modelInputs.cpuToDeviceEnergyFactor.toFixed(3)}`);
+    const source = modelInputs.cpuToDeviceFactorSource ?? 'scalar-config';
+    lines.push(`Whole Device Uplift Factor: ${modelInputs.cpuToDeviceEnergyFactor.toFixed(3)} (${source})`);
+  }
+
+  if (modelInputs.cpuToDeviceEnergyFactorBlended !== undefined) {
+    lines.push(`Blended Whole Device Uplift: ${modelInputs.cpuToDeviceEnergyFactorBlended.toFixed(3)}`);
+  }
+
+  if (modelInputs.deviceMixProfile) {
+    const source = modelInputs.deviceMixProfileSource ?? 'default';
+    lines.push(`Device Mix Profile: ${modelInputs.deviceMixProfile} (${source})`);
+  }
+
+  if (modelInputs.cpuToDeviceUsageWeights) {
+    const weights = modelInputs.cpuToDeviceUsageWeights;
+    lines.push(
+      `Device Mix Weights: desktop ${weights.desktop.toFixed(3)}, laptop ${weights.laptop.toFixed(3)}, tablet ${weights.tablet.toFixed(3)}, mobile ${weights.mobile.toFixed(3)}`,
+    );
+  }
+
+  if (modelInputs.cpuToDeviceProfileFactors) {
+    const factors = modelInputs.cpuToDeviceProfileFactors;
+    lines.push(
+      `Device Class Factors: desktop ${factors.desktop.toFixed(3)}, laptop ${factors.laptop.toFixed(3)}, tablet ${factors.tablet.toFixed(3)}, mobile ${factors.mobile.toFixed(3)}`,
+    );
   }
 
   if (modelInputs.dataCacheRatio !== undefined) {
@@ -630,12 +1193,17 @@ async function runMultiUrlMode(args: CliArgs, repeatOptions: RepeatExecutionOpti
       async () =>
         runJourneyWithPlugins({
           url,
+          urlWaitUntil: args.urlWaitUntil,
           plugins: [new BrowserPlugin()],
           compareCache: args.compareCache,
           clearCacheBeforeFirstRun: args.clearCacheBeforeFirstRun,
           cpuMeasurementSeconds: args.cpuMeasurementSeconds,
           cpuMode: args.cpuMode,
           cpuCurveProfile: args.cpuCurveProfile,
+          cpuDeviceMixProfile: args.cpuDeviceMixProfile,
+          cpuToDeviceEnergyFactor: args.cpuToDeviceEnergyFactor,
+          cpuToDeviceEnergyProfileFactors: args.cpuToDeviceEnergyProfileFactors,
+          cpuToDeviceUsageWeights: args.cpuToDeviceUsageWeights,
           disableCpuMeasurement: args.disableCpuMeasurement,
           gridIntensity: args.gridIntensity,
           greenHostingFactor: args.greenHostingFactor,
@@ -735,7 +1303,26 @@ function parseCpuMeasurementMode(value: string): CpuMeasurementMode | undefined 
 
 function parseCpuCurveProfile(value: string): CpuCurveProfileId | undefined {
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'if-default' || normalized === 'linear') {
+  if (normalized === 'if-default' || normalized === 'realistic') {
+    return 'realistic';
+  }
+
+  if (normalized === 'conservative' || normalized === 'aggressive' || normalized === 'linear') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function parseDeviceMixProfile(value: string): DeviceMixProfileId | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === 'enterprise' ||
+    normalized === 'consumer' ||
+    normalized === 'mobile-first' ||
+    normalized === 'desktop-first' ||
+    normalized === 'custom'
+  ) {
     return normalized;
   }
 

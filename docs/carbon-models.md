@@ -176,7 +176,19 @@ impact-trace.config.json
 {
 	"cpuWatts": 20,
 	"cpuCurveProfile": "if-default",
-	"cpuToDeviceEnergyFactor": 1,
+	"cpuToDeviceEnergyFactor": 1.9,
+	"cpuToDeviceEnergyProfileFactors": {
+		"desktop": 2.4,
+		"laptop": 1.8,
+		"tablet": 1.5,
+		"mobile": 1.3
+	},
+	"cpuToDeviceUsageWeights": {
+		"desktop": 0.35,
+		"laptop": 0.35,
+		"tablet": 0.1,
+		"mobile": 0.2
+	},
 	"cpuActiveCores": 1,
 	"cpuMeasurementSeconds": 3,
 	"greenHostingFactor": 0.3,
@@ -189,6 +201,46 @@ impact-trace.config.json
 	}
 }
 ```
+
+## CPU to Device Factor Profiles
+
+ImpactTrace supports a weighted CPU-to-device factor blend across common device classes:
+
+- `desktop`
+- `laptop`
+- `tablet`
+- `mobile`
+
+Blended factor equation:
+
+$$
+F_{blended} = F_{desktop}W_{desktop} + F_{laptop}W_{laptop} + F_{tablet}W_{tablet} + F_{mobile}W_{mobile}
+$$
+
+Default profile factors:
+
+- `desktop=2.4`
+- `laptop=1.8`
+- `tablet=1.5`
+- `mobile=1.3`
+
+Default usage weights:
+
+- `desktop=0.35`
+- `laptop=0.35`
+- `tablet=0.10`
+- `mobile=0.20`
+
+Default blended factor from these values is `1.88`.
+
+Precedence for applied `cpuToDeviceEnergyFactor`:
+
+1. CLI `--cpu-to-device-factor`
+2. Env `IMPACT_TRACE_CPU_TO_DEVICE_ENERGY_FACTOR`
+3. Config `cpuToDeviceEnergyFactor`
+4. Blended profile factor (`cpuToDeviceEnergyProfileFactors` x `cpuToDeviceUsageWeights`)
+
+Weights must sum to `1` (with a small tolerance for floating-point math).
 
 ## Planned Model Evolution
 

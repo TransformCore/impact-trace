@@ -16,6 +16,11 @@ import type {
   CarbonMetric,
   ComparisonDeltaReport,
   ComparisonReport,
+  DeviceMixProfileId,
+  DeviceMixProfileSource,
+  CpuDeviceProfileFactors,
+  CpuDeviceUsageWeights,
+  CpuToDeviceFactorSource,
   CpuCurveProfileId,
   CpuMeasurementMode,
   CpuDetails,
@@ -34,6 +39,7 @@ import type {
 export interface RunOptions {
   journeyScript?: string;
   url?: string;
+  urlWaitUntil?: UrlWaitUntil;
   plugins: MeasurementPlugin[];
   workingDirectory?: string;
   compareCache?: boolean;
@@ -41,6 +47,10 @@ export interface RunOptions {
   cpuMeasurementSeconds?: number;
   cpuMode?: CpuMeasurementMode;
   cpuCurveProfile?: CpuCurveProfileId;
+  cpuToDeviceEnergyFactor?: number;
+  cpuToDeviceEnergyProfileFactors?: CpuDeviceProfileFactors;
+  cpuToDeviceUsageWeights?: CpuDeviceUsageWeights;
+  cpuDeviceMixProfile?: DeviceMixProfileId;
   disableCpuMeasurement?: boolean;
   gridIntensity?: GridIntensityConfig;
   greenHostingFactor?: number;
@@ -48,9 +58,17 @@ export interface RunOptions {
   dataCacheRatio?: number;
 }
 
+export type UrlWaitUntil = 'load' | 'domcontentloaded' | 'networkidle';
+
 export async function runJourneyWithPlugins(options: RunOptions): Promise<ImpactTraceReport> {
   const workingDirectory = options.workingDirectory ?? process.cwd();
-  const runtimeConfig = await resolveRuntimeConfig({ workingDirectory });
+  const runtimeConfig = await resolveRuntimeConfig({
+    workingDirectory,
+    cpuToDeviceEnergyFactor: options.cpuToDeviceEnergyFactor,
+    cpuToDeviceEnergyProfileFactors: options.cpuToDeviceEnergyProfileFactors,
+    cpuToDeviceUsageWeights: options.cpuToDeviceUsageWeights,
+    cpuDeviceMixProfile: options.cpuDeviceMixProfile,
+  });
   const cpuMeasurementSeconds =
     options.cpuMeasurementSeconds && options.cpuMeasurementSeconds > 0
       ? options.cpuMeasurementSeconds
@@ -141,6 +159,12 @@ export async function runJourneyWithPlugins(options: RunOptions): Promise<Impact
     cpuCurveProfile,
     runtimeConfig.cpuCurvePoints,
     runtimeConfig.cpuToDeviceEnergyFactor,
+    runtimeConfig.cpuToDeviceEnergyFactorBlended,
+    runtimeConfig.cpuToDeviceFactorSource,
+    runtimeConfig.deviceMixProfile,
+    runtimeConfig.deviceMixProfileSource,
+    runtimeConfig.cpuToDeviceProfileFactors,
+    runtimeConfig.cpuToDeviceUsageWeights,
     runtimeConfig.cpuActiveCores,
     cpuCurveSource,
     cpuMode,
@@ -196,6 +220,12 @@ function buildReportFromMetrics(
   cpuCurveProfile: CpuCurveProfileId,
   cpuCurvePoints: { x: number[]; y: number[] },
   cpuToDeviceEnergyFactor: number,
+  cpuToDeviceEnergyFactorBlended: number,
+  cpuToDeviceFactorSource: CpuToDeviceFactorSource,
+  deviceMixProfile: DeviceMixProfileId,
+  deviceMixProfileSource: DeviceMixProfileSource,
+  cpuToDeviceProfileFactors: CpuDeviceProfileFactors,
+  cpuToDeviceUsageWeights: CpuDeviceUsageWeights,
   cpuActiveCores: number,
   cpuCurveSource: 'default' | 'explicit',
   cpuMeasurementMode: CpuMeasurementMode,
@@ -235,12 +265,19 @@ function buildReportFromMetrics(
       modelInputs: {
         cpuMeasurementMode,
         cpuCurveProfile,
+        cpuCurveProfileCanonical: normalizeCpuCurveProfile(cpuCurveProfile),
         cpuCurveSource,
         cpuCurvePoints,
         cpuPowerFactor: estimate.cpuPowerFactor,
         cpuUtilizationPercent: estimate.cpuUtilizationPercent,
         cpuMeasurementWindowMs: estimate.cpuMeasurementWindowMs,
         cpuToDeviceEnergyFactor,
+        cpuToDeviceEnergyFactorBlended,
+        cpuToDeviceFactorSource,
+        deviceMixProfile,
+        deviceMixProfileSource,
+        cpuToDeviceProfileFactors,
+        cpuToDeviceUsageWeights,
         cpuActiveCores,
         resolvedGridIntensity: estimate.resolvedGridIntensity,
         userDeviceOperationalSource: estimate.userDeviceOperationalSource,
@@ -324,12 +361,19 @@ function buildReportFromMetrics(
     modelInputs: {
       cpuMeasurementMode,
       cpuCurveProfile,
+      cpuCurveProfileCanonical: normalizeCpuCurveProfile(cpuCurveProfile),
       cpuCurveSource,
       cpuCurvePoints,
       cpuPowerFactor: firstEstimate.cpuPowerFactor,
       cpuUtilizationPercent: firstEstimate.cpuUtilizationPercent,
       cpuMeasurementWindowMs: firstEstimate.cpuMeasurementWindowMs,
       cpuToDeviceEnergyFactor,
+      cpuToDeviceEnergyFactorBlended,
+      cpuToDeviceFactorSource,
+      deviceMixProfile,
+      deviceMixProfileSource,
+      cpuToDeviceProfileFactors,
+      cpuToDeviceUsageWeights,
       cpuActiveCores,
       resolvedGridIntensity: firstEstimate.resolvedGridIntensity,
       userDeviceOperationalSource: firstEstimate.userDeviceOperationalSource,
@@ -343,6 +387,10 @@ function buildReportFromMetrics(
     },
     comparison,
   };
+}
+
+function normalizeCpuCurveProfile(profile: CpuCurveProfileId): Exclude<CpuCurveProfileId, 'if-default'> {
+  return profile === 'if-default' ? 'realistic' : profile;
 }
 
 export function buildRepresentativeVisit(
@@ -782,9 +830,11 @@ async function resolveJourney(options: RunOptions, journeyScriptPath: string): P
       throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol}`);
     }
 
+    const waitUntil: UrlWaitUntil = options.urlWaitUntil ?? 'networkidle';
+
     return async (page) => {
       await page.goto(parsedUrl.href, {
-        waitUntil: 'domcontentloaded',
+        waitUntil,
         timeout: 60_000,
       });
     };
