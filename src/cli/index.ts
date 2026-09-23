@@ -32,10 +32,12 @@ import type {
 
 interface CliArgs {
   command?: string;
+  help: boolean;
   journeyScript?: string;
   urls: string[];
   urlWaitUntil?: UrlWaitUntil;
   outputPath: string;
+  outputPathExplicitlySet: boolean;
   compareCache: boolean;
   clearCacheBeforeFirstRun: boolean;
   cpuMeasurementSeconds?: number;
@@ -73,6 +75,11 @@ interface RepeatExecutionOptions {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.help) {
+    printUsage();
+    return;
+  }
 
   if (args.command !== 'run' || (!args.journeyScript && args.urls.length === 0)) {
     printUsage();
@@ -180,10 +187,12 @@ async function main(): Promise<void> {
     format: resolvedFormat,
   });
 
-  const outputPath = path.resolve(process.cwd(), args.outputPath);
-  await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
+  if (args.outputPathExplicitlySet) {
+    const outputPath = path.resolve(process.cwd(), args.outputPath);
+    await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
 
-  console.log(`\nJSON report written to ${outputPath}`);
+    console.log(`\nJSON report written to ${outputPath}`);
+  }
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -192,6 +201,7 @@ function parseArgs(argv: string[]): CliArgs {
   const journeyScript = maybeJourneyScript && !maybeJourneyScript.startsWith('-') ? maybeJourneyScript : undefined;
 
   let outputPath = 'impact-trace-report.json';
+  let outputPathExplicitlySet = false;
   const urls: string[] = [];
   let urlWaitUntil: UrlWaitUntil | undefined;
   let compareCache = false;
@@ -220,10 +230,17 @@ function parseArgs(argv: string[]): CliArgs {
   let scoreThresholds: Partial<ImpactScoreThresholds> | undefined;
   let findingsLimit: number | undefined;
   let parseError: string | undefined;
+  let help = command === '--help' || command === '-h';
 
   for (let i = 1; i < argv.length; i += 1) {
+    if (argv[i] === '--help' || argv[i] === '-h') {
+      help = true;
+      continue;
+    }
+
     if (argv[i] === '--output' && argv[i + 1]) {
       outputPath = argv[i + 1];
+      outputPathExplicitlySet = true;
       i += 1;
       continue;
     }
@@ -627,10 +644,12 @@ function parseArgs(argv: string[]): CliArgs {
 
   return {
     command,
+    help,
     journeyScript,
     urls,
     urlWaitUntil,
     outputPath,
+    outputPathExplicitlySet,
     compareCache,
     clearCacheBeforeFirstRun,
     cpuMeasurementSeconds,
@@ -671,8 +690,71 @@ function parseFindingsLimitArg(value: string): number | undefined {
 }
 
 function printUsage(): void {
-  console.log('Usage: impact-trace run <journey-script> [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>] [--findings-limit <n|all>]');
-  console.log('   or: impact-trace run --url <https://example.com> [--url <https://another.com> ...] [--wait-until <load|domcontentloaded|networkidle>] [--output <file>] [--compare-cache] [--no-clear-cache] [--cpu-seconds <seconds>] [--cpu-mode <thread-time|process-info>] [--cpu-curve-profile <realistic|conservative|aggressive|linear|if-default>] [--cpu-device-mix <enterprise|consumer|mobile-first|desktop-first|custom>] [--cpu-to-device-factor <number>] [--cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>] [--cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>] [--no-cpu] [--grid-intensity-<segment> <value>] [--green-hosting-factor <0..1>] [--return-visitor-ratio <0..1>] [--data-cache-ratio <0..1>] [--repeat <n>] [--warmup <n>] [--average <mean|median|trimmed-mean>] [--trim-percent <0..0.5>] [--verbose] [--format <console|json|github-pr>] [--baseline <file>] [--budget-carbon <grams>] [--budget-transfer-mb <mb>] [--budget-cpu-seconds <seconds>] [--budget-third-party-mb <mb>] [--score-thresholds <A,B,C,D,E>] [--findings-limit <n|all>]');
+  console.log(`
+ImpactTrace measures the energy, carbon, CPU, and transfer impact of a web journey.
+
+USAGE
+  impact-trace run <journey-script> [options]
+  impact-trace run --url <url> [--url <url> ...] [options]
+
+Provide exactly one input mode. A journey script receives a Playwright Page and can
+describe a multi-step user flow. URL mode visits one or more URLs directly.
+
+INPUTS
+  <journey-script>                 TypeScript journey exporting a default async function
+  --url <url>                      URL to measure; repeat for multiple URLs (http/https)
+
+RUN CONTROL
+  --repeat <n>                     Number of measured runs (default: 1)
+  --warmup <n>                     Unreported warmup runs before measurement (default: 0)
+  --average <mode>                 mean, median, or trimmed-mean
+  --trim-percent <0..0.5>          Fraction trimmed from each end for trimmed-mean
+  --compare-cache                  Compare a new visitor with a returning visitor
+  --no-clear-cache                 Keep cache contents for the first comparison pass
+  --verbose                        Include model internals after the developer report
+  --wait-until <event>             URL navigation readiness: load, domcontentloaded,
+                                   or networkidle (default: networkidle)
+
+CPU AND DEVICE MODEL
+  --cpu-seconds <seconds>          Minimum CPU measurement window (default: 3)
+  --cpu-mode <mode>                thread-time or process-info
+  --cpu-curve-profile <profile>    realistic, conservative, aggressive, linear, or if-default
+  --cpu-device-mix <profile>       enterprise, consumer, mobile-first, desktop-first, or custom
+  --cpu-to-device-factor <number>  Explicit CPU-to-device energy factor
+  --cpu-device-profile-factors <desktop:n,laptop:n,tablet:n,mobile:n>
+                                   Device energy factors for a weighted custom mix
+  --cpu-device-weights <desktop:n,laptop:n,tablet:n,mobile:n>
+                                   Device usage weights; values must sum to 1
+  --no-cpu                         Disable CPU measurement; totals then use transfer/energy only
+
+CARBON MODEL
+  --grid-intensity-<segment> <v>   Override device, network, or datacenter intensity.
+                                   Use a positive number, ISO3 code, or country:<ISO3>.
+  --green-hosting-factor <0..1>    Renewable share of data-center energy
+  --return-visitor-ratio <0..1>    Returning visitor share (default: 0.75)
+  --data-cache-ratio <0..1>        Cached data share for returning visitors
+
+REPORTING AND CI
+  --output <file>                  Write JSON report to this path (not written by default)
+  --format <format>                console, json, or github-pr (default: console)
+  --baseline <file>                Previous JSON report for trend deltas
+  --budget-carbon <grams>          Carbon budget for a representative visit
+  --budget-transfer-mb <mb>        Transfer budget in megabytes
+  --budget-cpu-seconds <seconds>   CPU budget in seconds
+  --budget-third-party-mb <mb>     Third-party transfer budget in megabytes
+  --score-thresholds <A,B,C,D,E>   Impact Score thresholds in grams
+  --findings-limit <n|all>         Number of key findings; use all, 0, or none for unlimited
+
+EXAMPLES
+  impact-trace run --url https://example.com
+  impact-trace run --url https://example.com --compare-cache --format github-pr
+  impact-trace run --url https://example.com --url https://another.example.com
+  impact-trace run src/examples/basicJourney.ts --repeat 3 --average median
+
+HELP
+  impact-trace --help              Show this help
+  impact-trace run --help          Show this help
+`);
 }
 
 function parseUrlWaitUntil(value: string): UrlWaitUntil | undefined {

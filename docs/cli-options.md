@@ -30,7 +30,7 @@ Notes:
   - Default: `networkidle`.
 - `--output <file>`
   - Output JSON file path.
-  - Default: `impact-trace-report.json`.
+  - Not written by default; the JSON report file is only written when this flag is provided.
 - `--compare-cache`
   - Runs each target twice:
     - first pass: new-user baseline (cache-cleared by default)

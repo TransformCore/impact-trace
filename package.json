@@ -1,11 +1,28 @@
 {
-  "name": "impact-trace",
+  "name": "@transform-uk/impact-trace",
   "version": "0.1.0",
   "description": "ImpactTrace - carbon estimation for web application user journeys in CI",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TransformCore/impact-trace.git"
+  },
+  "homepage": "https://github.com/TransformCore/impact-trace#readme",
+  "bugs": {
+    "url": "https://github.com/TransformCore/impact-trace/issues"
+  },
   "bin": {
     "impact-trace": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -28,7 +45,7 @@
     "playwright": "^1.55.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.29",
+    "@types/node": "^26.6.2",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/TransformCore/impact-trace/discussions
+    about: Ask questions or discuss ideas before filing an issue

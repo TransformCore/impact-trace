@@ -1,5 +1,8 @@
 # ImpactTrace
 
+[![CI](https://github.com/TransformCore/impact-trace/actions/workflows/ci.yml/badge.svg)](https://github.com/TransformCore/impact-trace/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ImpactTrace is a carbon estimation CLI for web application journeys in CI pipelines.
 
 It executes browser journeys with Playwright, captures resource/network data, estimates energy usage and carbon impact, and provides developer-friendly optimization suggestions.
@@ -79,7 +82,7 @@ npx impact-trace run src/examples/basicJourney.ts --compare-cache
 ImpactTrace outputs:
 
 - Human-readable console report
-- JSON report file (default: impact-trace-report.json)
+- JSON report file, only when `--output <file>` is provided (not written by default)
 
 Console report includes:
 
