@@ -191,7 +191,12 @@ async function main(): Promise<void> {
     const outputPath = path.resolve(process.cwd(), args.outputPath);
     await fs.writeFile(outputPath, JSON.stringify(output, null, 2), 'utf-8');
 
-    console.log(`\nJSON report written to ${outputPath}`);
+    const outputMessage = `JSON report written to ${outputPath}`;
+    if (resolvedFormat === 'console') {
+      console.log(`\n${outputMessage}`);
+    } else {
+      console.error(outputMessage);
+    }
   }
 }
 

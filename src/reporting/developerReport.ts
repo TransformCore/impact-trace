@@ -391,32 +391,49 @@ function buildBudgetResults(
   representative: { carbonGrams: number; transferBytes: number; cpuSeconds: number },
   resources: ClassifiedResource[],
   budgets?: ImpactBudgets,
+  baselineRepresentative?: { carbonGrams: number; transferBytes: number; cpuSeconds: number },
+  baselineResources: ClassifiedResource[] = [],
 ): BudgetResult[] {
   const thirdPartyBytes = resources
     .filter((item) => item.category === 'thirdParty')
     .reduce((sum, item) => sum + item.resource.networkBytes, 0);
+  const baselineThirdPartyBytes = baselineRepresentative
+    ? baselineResources
+      .filter((item) => item.category === 'thirdParty')
+      .reduce((sum, item) => sum + item.resource.networkBytes, 0)
+    : undefined;
 
-  const rows: Array<{ metric: BudgetResult['metric']; actual: number; budget?: number; unit: BudgetResult['unit'] }> = [
-    { metric: 'carbon', actual: representative.carbonGrams, budget: budgets?.carbonGrams, unit: 'g' },
-    { metric: 'transfer', actual: representative.transferBytes, budget: budgets?.transferBytes, unit: 'bytes' },
-    { metric: 'cpu', actual: representative.cpuSeconds, budget: budgets?.cpuSeconds, unit: 'seconds' },
-    { metric: 'thirdParty', actual: thirdPartyBytes, budget: budgets?.thirdPartyBytes, unit: 'bytes' },
+  const rows: Array<{ metric: BudgetResult['metric']; actual: number; budget?: number; unit: BudgetResult['unit']; baselineActual?: number }> = [
+    { metric: 'carbon', actual: representative.carbonGrams, budget: budgets?.carbonGrams, unit: 'g', baselineActual: baselineRepresentative?.carbonGrams },
+    { metric: 'transfer', actual: representative.transferBytes, budget: budgets?.transferBytes, unit: 'bytes', baselineActual: baselineRepresentative?.transferBytes },
+    { metric: 'cpu', actual: representative.cpuSeconds, budget: budgets?.cpuSeconds, unit: 'seconds', baselineActual: baselineRepresentative?.cpuSeconds },
+    { metric: 'thirdParty', actual: thirdPartyBytes, budget: budgets?.thirdPartyBytes, unit: 'bytes', baselineActual: baselineThirdPartyBytes },
   ];
 
   return rows.map((row) => {
+    const { baselineActual, ...result } = row;
+    const baselineDelta = baselineActual === undefined ? undefined : row.actual - baselineActual;
+    const baselineDeltaPercent = baselineActual === undefined
+      ? undefined
+      : toDeltaPercent(baselineActual, row.actual);
+
     if (row.budget === undefined) {
       return {
-        ...row,
+        ...result,
         status: 'not-configured',
+        baselineDelta,
+        baselineDeltaPercent,
       };
     }
 
     const delta = row.actual - row.budget;
     return {
-      ...row,
+      ...result,
       status: delta <= 0 ? 'pass' : 'fail',
       delta,
       deltaPercent: toDeltaPercent(row.budget, row.actual),
+      baselineDelta,
+      baselineDeltaPercent,
     };
   });
 }
@@ -539,13 +556,13 @@ export function buildGithubComment(defaultView: DeveloperReport, maxLines?: numb
         : budget.unit === 'seconds'
           ? `${budget.budget.toFixed(2)} s`
           : `${budget.budget.toFixed(2)} g`;
-    const delta = budget.delta === undefined
+    const delta = budget.baselineDelta === undefined
       ? 'n/a'
       : budget.unit === 'bytes'
-        ? formatDelta(budget.delta / BYTES_PER_MB, budget.deltaPercent, ' MB')
+        ? formatDelta(budget.baselineDelta / BYTES_PER_MB, budget.baselineDeltaPercent, ' MB')
         : budget.unit === 'seconds'
-          ? formatDelta(budget.delta, budget.deltaPercent, ' s')
-          : formatDelta(budget.delta, budget.deltaPercent, ' g');
+          ? formatDelta(budget.baselineDelta, budget.baselineDeltaPercent, ' s')
+          : formatDelta(budget.baselineDelta, budget.baselineDeltaPercent, ' g');
 
     return `| ${budget.metric} | ${actual} | ${configuredBudget} | ${delta} | ${budget.status.toUpperCase()} |`;
   });
@@ -591,6 +608,16 @@ export function buildReportingOutput(report: ImpactTraceReport, options: Reporti
     resource,
     category: classifyResource(resource, firstPartyHost),
   }));
+  const baselineRepresentative = options.baseline
+    ? computeRepresentativeMetrics(options.baseline)
+    : undefined;
+  const baselineFirstPartyHost = options.baseline
+    ? inferFirstPartyHost(options.baseline, options.url)
+    : undefined;
+  const baselineResources: ClassifiedResource[] = (options.baseline?.topResources ?? []).map((resource) => ({
+    resource,
+    category: classifyResource(resource, baselineFirstPartyHost),
+  }));
 
   const findingsLimit = resolveFindingsLimit(options.settings?.findingsLimit);
 
@@ -598,7 +625,13 @@ export function buildReportingOutput(report: ImpactTraceReport, options: Reporti
   const findings = buildFindings(breakdown, representative.carbonGrams, options.budgets, findingsLimit);
   const savings = buildSavingsSummary(findings, representative.carbonGrams);
   const cache = buildCacheAssessment(report);
-  const budgets = buildBudgetResults(representative, classifiedResources, options.budgets);
+  const budgets = buildBudgetResults(
+    representative,
+    classifiedResources,
+    options.budgets,
+    baselineRepresentative,
+    baselineResources,
+  );
   const status = buildStatus(score, breakdown, budgets, cache);
   const ciSummary = buildCiSummary(representative, budgets, breakdown, options.baseline);
 

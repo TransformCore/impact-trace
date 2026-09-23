@@ -201,6 +201,20 @@ test('buildGithubComment renders a compact markdown summary', () => {
   assert.match(markdown, /Top Actions/);
 });
 
+test('buildGithubComment renders baseline deltas instead of budget variance', () => {
+  const output = buildReportingOutput(makeReport(1.82), {
+    baseline: makeReport(1.51),
+    budgets: {
+      carbonGrams: 2,
+    },
+  });
+
+  assert.match(output.githubComment, /\| carbon \| 1\.82 g \| 2\.00 g \| \+0\.31 g \(\+20\.5%\) \| PASS \|/);
+  assert.match(output.githubComment, /\| cpu \| 0\.47 s \| n\/a \| \+0\.00 s \(\+0\.0%\) \| NOT-CONFIGURED \|/);
+  assert.match(output.githubComment, /\| thirdParty \| 0\.00 MB \| n\/a \| \+0\.00 MB \| NOT-CONFIGURED \|/);
+  assert.doesNotMatch(output.githubComment, /-0\.18 g/);
+});
+
 test('buildReportingOutput respects findings limit setting', () => {
   const output = buildReportingOutput(makeReport(), {
     settings: {

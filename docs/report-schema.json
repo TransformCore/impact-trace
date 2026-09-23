@@ -167,7 +167,9 @@
               "unit": { "type": "string", "enum": ["g", "bytes", "seconds"] },
               "status": { "type": "string", "enum": ["pass", "fail", "not-configured"] },
               "delta": { "type": "number" },
-              "deltaPercent": { "type": ["number", "null"] }
+              "deltaPercent": { "type": ["number", "null"] },
+              "baselineDelta": { "type": "number" },
+              "baselineDeltaPercent": { "type": ["number", "null"] }
             }
           }
         },

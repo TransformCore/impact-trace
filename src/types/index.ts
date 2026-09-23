@@ -381,6 +381,8 @@ export interface BudgetResult {
   status: BudgetStatus;
   delta?: number;
   deltaPercent?: number | null;
+  baselineDelta?: number;
+  baselineDeltaPercent?: number | null;
 }
 
 export interface CiSummary {
