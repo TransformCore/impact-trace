@@ -26,6 +26,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "test": "node --test --import tsx src/**/*.test.ts",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js"
