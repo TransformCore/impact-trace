@@ -1,5 +1,5 @@
 {
-  "name": "impact-trace",
+  "name": "@transform-uk/impact-trace",
   "version": "0.0.0",
   "description": "ImpactTrace - carbon estimation for web application user journeys",
   "license": "MIT",
