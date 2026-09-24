@@ -1,7 +1,7 @@
 {
-  "name": "@transform-uk/impact-trace",
+  "name": "impact-trace",
   "version": "0.0.0",
-  "description": "ImpactTrace - carbon estimation for web application user journeys in CI",
+  "description": "ImpactTrace - carbon estimation for web application user journeys",
   "license": "MIT",
   "type": "module",
   "repository": {
